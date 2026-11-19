@@ -444,10 +444,18 @@
   const isChoice = (f) => ["select", "radio", "buttons"].includes(f.control) || f.control === "combobox";
 
   // For a question with no direct profile answer, JEV makes its best guess from the candidate's facts, so required fields are not left blank.
+  // Legal and EEO questions are exempt: without a profile answer they are flagged for you, never guessed.
+  const SENSITIVE = /\bfelon|convict|criminal record|authori[sz]ed to work|eligible to work|right to work|sponsorship|security clearance|\bgender\b|ethnic|\brace\b|veteran|disabilit/i;
+
   async function answerWithJev(todo, threshold) {
     for (const { f, entry, reason, value } of todo) {
       if (Date.now() > deadline) {
         report.skipped.push({ ...entry, reason: "ran out of time" });
+        continue;
+      }
+      // A legal or EEO question without a profile answer is never guessed.
+      if (!value && SENSITIVE.test(entry.label)) {
+        report.skipped.push({ ...entry, reason: "sensitive question: answer it yourself" });
         continue;
       }
       if (!isChoice(f)) continue;

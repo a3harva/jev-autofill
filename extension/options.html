@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>JEV Autofill</title>
+<style>
+  body { font: 14px system-ui; max-width: 640px; margin: 24px auto; padding: 0 16px; }
+  label { display: block; margin: 14px 0 4px; font-weight: 600; }
+  select { width: 100%; box-sizing: border-box; padding: 6px; }
+  button { margin-top: 16px; padding: 8px 16px; }
+</style>
+<h1>JEV Autofill</h1>
+<p>The API key and profile stay in this project's files and are read by the local helper. The JEV modes need <code>TYPESAFE_API_KEY</code> in <code>.env</code>.</p>
+<label for="mode">Mapping mode</label>
+<select id="mode">
+  <option value="static">Static rules only</option>
+  <option value="hybrid">Static rules, then JEV</option>
+  <option value="jev">JEV only</option>
+</select>
+<button id="save">Save</button>
+<span id="status"></span>
+<script src="options.js"></script>

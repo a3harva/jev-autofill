@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Shadow DOM application</title></head>
+<body>
+<h1>Apply: Senior AI Engineer, Bengaluru, India</h1>
+<form id="app"></form>
+<script>
+// Web-component fields like SmartRecruiters' spl-* elements: each input lives in a shadow root and the
+// component keeps its own state, re-rendering the input from that state on blur. A value the component
+// never heard about (no input event reaching it) is wiped on blur, like a real controlled component.
+class XInput extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({ mode: 'open' });
+    const id = 'in-' + Math.random().toString(36).slice(2, 7);
+    const type = this.getAttribute('type') || 'text';
+    root.innerHTML = `<div class="field"><label for="${id}">${this.getAttribute('label')}${this.hasAttribute('required') ? '*' : ''}</label><input id="${id}" type="${type}"></div>`;
+    const input = root.querySelector('input');
+    this.state = '';
+    // Listens on the host, outside the shadow root, so only composed events arrive.
+    this.addEventListener('input', () => { this.state = input.value; });
+    input.addEventListener('blur', () => setTimeout(() => { input.value = this.state; }, 50));
+  }
+}
+class XSelect extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({ mode: 'open' });
+    const id = 'sel-' + Math.random().toString(36).slice(2, 7);
+    const opts = this.getAttribute('options').split('|');
+    root.innerHTML = `<label for="${id}">${this.getAttribute('label')}</label><select id="${id}"><option value="">Select...</option>${opts.map((o) => `<option value="${o}">${o}</option>`).join('')}</select>`;
+  }
+}
+class XRadios extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({ mode: 'open' });
+    const name = 'r-' + Math.random().toString(36).slice(2, 7);
+    const opts = this.getAttribute('options').split('|');
+    root.innerHTML = `<fieldset><legend>${this.getAttribute('label')}</legend>${opts.map((o) => `<label><input type="radio" name="${name}" value="${o}"> ${o}</label>`).join('')}</fieldset>`;
+  }
+}
+// One more level: a section component whose shadow root holds further field components.
+class XSection extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({ mode: 'open' });
+    root.innerHTML = `<section><h2>${this.getAttribute('title')}</h2><slot></slot><x-input label="Current company"></x-input><x-input label="Current job title"></x-input></section>`;
+  }
+}
+customElements.define('x-input', XInput);
+customElements.define('x-select', XSelect);
+customElements.define('x-radios', XRadios);
+customElements.define('x-section', XSection);
+document.getElementById('app').innerHTML = `
+  <x-input label="First name" required></x-input>
+  <x-input label="Last name" required></x-input>
+  <x-input label="Email" type="email" required></x-input>
+  <x-input label="Confirm your email" type="email" required></x-input>
+  <x-input label="Phone number" type="tel" required></x-input>
+  <x-select label="Country" options="United States|India|Germany"></x-select>
+  <x-radios label="Will you require visa sponsorship?" options="Yes|No"></x-radios>
+  <x-section title="Experience"></x-section>
+  <button type="submit" onclick="event.preventDefault(); window.__submits = (window.__submits || 0) + 1">Submit</button>`;
+</script>
+</body></html>

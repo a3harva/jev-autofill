@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Widget application form</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/antd@5.21.6/dist/reset.css">
+</head>
+<body style="font-family: sans-serif; max-width: 720px; margin: 24px auto">
+<h1>Apply: AI Engineer, Pune, India</h1>
+<div id="root"></div>
+<pre id="state"></pre>
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mui/material@5.16.7/umd/material-ui.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/dayjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/antd@5.21.6/dist/antd.min.js"></script>
+<script>
+// Real Material UI and Ant Design controls, each controlled by React state. window.__state is what the
+// form would submit, so a value that is only painted on screen and never reached state is caught.
+const { useState, useEffect } = React;
+const { TextField, MenuItem, Select, FormControl, InputLabel, Autocomplete, Radio, RadioGroup, FormControlLabel, FormLabel, Checkbox } = MaterialUI;
+const { Select: ASelect, Input: AInput, InputNumber, Form } = antd;
+const h = React.createElement;
+const COUNTRIES = ["United States", "India", "Germany", "Singapore"];
+const CITIES = ["Mumbai", "Pune", "Bengaluru", "Hyderabad", "Chennai"];
+function App() {
+  const [s, set] = useState({ firstName: "", lastName: "", email: "", phone: "", country: "", city: null, gender: "", sponsorship: "", experience: "", noticeA: undefined, expectedA: null, companyA: "", consent: false });
+  const up = (k) => (v) => set((o) => ({ ...o, [k]: v }));
+  useEffect(() => { window.__state = s; document.getElementById("state").textContent = JSON.stringify(s); }, [s]);
+  return h("form", { onSubmit: (e) => e.preventDefault(), style: { display: "grid", gap: 16 } },
+    h("h2", null, "Material UI"),
+    h(TextField, { label: "First name", required: true, value: s.firstName, onChange: (e) => up("firstName")(e.target.value) }),
+    h(TextField, { label: "Last name", required: true, value: s.lastName, onChange: (e) => up("lastName")(e.target.value) }),
+    h(TextField, { label: "Email", type: "email", value: s.email, onChange: (e) => up("email")(e.target.value) }),
+    h(TextField, { label: "Phone", type: "tel", value: s.phone, onChange: (e) => up("phone")(e.target.value) }),
+    h(FormControl, null, h(InputLabel, { id: "country-label" }, "Country"),
+      h(Select, { labelId: "country-label", label: "Country", value: s.country, onChange: (e) => up("country")(e.target.value) }, COUNTRIES.map((c) => h(MenuItem, { key: c, value: c }, c)))),
+    h(Autocomplete, { options: CITIES, value: s.city, onChange: (_, v) => up("city")(v), renderInput: (p) => h(TextField, { ...p, label: "City" }) }),
+    h(FormControl, null, h(FormLabel, { id: "g" }, "Gender"),
+      h(RadioGroup, { row: true, "aria-labelledby": "g", value: s.gender, onChange: (e) => up("gender")(e.target.value) }, ["Male", "Female", "Prefer not to say"].map((g) => h(FormControlLabel, { key: g, value: g, control: h(Radio), label: g })))),
+    h(FormControl, null, h(InputLabel, { id: "sp-label" }, "Will you require visa sponsorship?"),
+      h(Select, { labelId: "sp-label", label: "Will you require visa sponsorship?", value: s.sponsorship, onChange: (e) => up("sponsorship")(e.target.value) }, ["Yes", "No"].map((c) => h(MenuItem, { key: c, value: c }, c)))),
+    h(TextField, { label: "Total years of experience", type: "number", value: s.experience, onChange: (e) => up("experience")(e.target.value) }),
+    h(FormControlLabel, { control: h(Checkbox, { checked: s.consent, onChange: (e) => up("consent")(e.target.checked) }), label: "I agree to the privacy policy" }),
+    h("h2", null, "Ant Design"),
+    h(Form, { layout: "vertical", component: "div" },
+      h(Form.Item, { label: "Current company", htmlFor: "companyA" }, h(AInput, { id: "companyA", value: s.companyA, onChange: (e) => up("companyA")(e.target.value) })),
+      h(Form.Item, { label: "Notice period", htmlFor: "noticeA" }, h(ASelect, { id: "noticeA", value: s.noticeA, onChange: up("noticeA"), placeholder: "Select", style: { width: 300 }, options: ["Immediate", "15 days", "30 days", "60 days", "90 days"].map((v) => ({ value: v, label: v })) })),
+      h(Form.Item, { label: "Expected CTC (LPA)", htmlFor: "expectedA" }, h(InputNumber, { id: "expectedA", value: s.expectedA, onChange: up("expectedA"), style: { width: 300 } }))
+    ),
+    h("button", { type: "submit" }, "Submit"));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+</script>
+</body></html>

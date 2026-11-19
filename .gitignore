@@ -1,0 +1,14 @@
+# Your own data: never commit these
+.env
+profile.local.json
+*.pdf
+!test/fixtures/sample-resume.pdf
+
+# Generated
+native/jev_host
+test/form.html
+test/frame.html
+test/ground-truth.json
+test/results/
+__pycache__/
+.DS_Store

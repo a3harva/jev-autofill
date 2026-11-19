@@ -6,6 +6,8 @@
   // Keys never filled: written answers, other people's details, and optional opt-ins; consent boxes
   // (ticked by hand only) and identity numbers, bank details and passwords (never filled, listed in the report).
   const NO_FILL = new Set(["free_text", "leave_blank", "unknown", "notifications_opt_in", "consent_yes", "password", "pan_number", "aadhaar_number", "passport_number", "bank_account"]);
+  // Never filled even if the profile has a value; the report asks you to enter these yourself.
+  const NEVER_FILL = new Set(["consent_yes", "password", "pan_number", "aadhaar_number", "passport_number", "bank_account"]);
   const PLACE_KEYS = new Set(["current_location", "city", "preferred_location"]);
   const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -446,6 +448,9 @@
   // For a question with no direct profile answer, JEV makes its best guess from the candidate's facts, so required fields are not left blank.
   // Legal and EEO questions are exempt: without a profile answer they are flagged for you, never guessed.
   const SENSITIVE = /\bfelon|convict|criminal record|authori[sz]ed to work|eligible to work|right to work|sponsorship|security clearance|\bgender\b|ethnic|\brace\b|veteran|disabilit/i;
+  // The key is the authoritative signal: in hybrid and jev modes the model assigns it, so a
+  // generically labelled field ("Please select one") can still be a legal or EEO question.
+  const SENSITIVE_KEYS = new Set(["felony", "authorized_to_work", "requires_sponsorship", "gender", "ethnicity", "veteran_status", "disability_status"]);
 
   async function answerWithJev(todo, threshold) {
     for (const { f, entry, reason, value } of todo) {
@@ -453,8 +458,14 @@
         report.skipped.push({ ...entry, reason: "ran out of time" });
         continue;
       }
+      // A field that is never filled stays unfilled even on the guessing path: a consent or
+      // notifications question drawn as yes/no radios is still a consent question.
+      if (entry.key && NO_FILL.has(entry.key)) {
+        report.skipped.push({ ...entry, reason: NEVER_FILL.has(entry.key) ? "never filled: enter it yourself" : "left for the agent" });
+        continue;
+      }
       // A legal or EEO question without a profile answer is never guessed.
-      if (!value && SENSITIVE.test(entry.label)) {
+      if (!value && (SENSITIVE.test(entry.label) || SENSITIVE_KEYS.has(entry.key))) {
         report.skipped.push({ ...entry, reason: "sensitive question: answer it yourself" });
         continue;
       }
@@ -587,6 +598,7 @@
       if (!m) leave(f, entry, "no answer");
       else if (m.confidence < threshold) leave(f, entry, "low confidence");
       else if (m.key === "unknown") leave(f, entry, "left for the agent");
+      else if (NEVER_FILL.has(m.key)) leave(f, entry, "never filled: enter it yourself");
       else if (NO_FILL.has(m.key)) leave(f, entry, "left for the agent");
       else todo.push({ f, entry });
     }

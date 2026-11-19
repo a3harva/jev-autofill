@@ -2,6 +2,8 @@
 const HOST = "com.jev_auto_mapper.host";
 // Tab id -> the top frame's origin while a fill is running.
 const active = new Map();
+// Tab ids with a click being confirmed or a fill already in flight.
+const busy = new Set();
 
 function askHost(msg) {
   return chrome.runtime.sendNativeMessage(HOST, msg).then((res) => {
@@ -105,22 +107,26 @@ async function confirmSite(tabId, origin) {
 }
 
 chrome.action.onClicked.addListener(async (tab) => {
-  if (active.has(tab.id)) return;
+  if (busy.has(tab.id)) return;
   const origin = originOf(tab.url);
   if (!origin) {
     show(tab.id, "?", "JEV Autofill: cannot read this page's address");
     return;
   }
-  const choice = await confirmSite(tab.id, origin);
-  if (choice !== "once" && choice !== "always") {
-    show(tab.id, "?", "JEV Autofill: not confirmed for this site");
-    return;
-  }
-  active.set(tab.id, origin);
-  // Calling an extension API keeps Chrome from stopping this worker during a long run.
-  const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
-  show(tab.id, "...", "JEV Autofill: filling");
+  // Added synchronously, before any await, so a second click cannot start a second run
+  // while the first is still waiting for the confirmation answer.
+  busy.add(tab.id);
+  let keepAlive;
   try {
+    const choice = await confirmSite(tab.id, origin);
+    if (choice !== "once" && choice !== "always") {
+      show(tab.id, "?", "JEV Autofill: not confirmed for this site");
+      return;
+    }
+    active.set(tab.id, origin);
+    // Calling an extension API keeps Chrome from stopping this worker during a long run.
+    keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
+    show(tab.id, "...", "JEV Autofill: filling");
     const target = { tabId: tab.id, allFrames: true };
     await chrome.scripting.executeScript({ target, files: ["rules.js", "workday.js", "content.js"] });
     const frames = await chrome.scripting.executeScript({ target, func: (title) => window.__jevRun(title), args: [tab.title || ""] });
@@ -131,7 +137,8 @@ chrome.action.onClicked.addListener(async (tab) => {
   } catch (e) {
     show(tab.id, "!", `JEV Autofill: ${e.message || e}`);
   } finally {
-    clearInterval(keepAlive);
+    if (keepAlive) clearInterval(keepAlive);
     active.delete(tab.id);
+    busy.delete(tab.id);
   }
 });

@@ -58,6 +58,12 @@ python3 test/build_form.py
 cd test && python3 e2e.py static                  # also: --location "London, United Kingdom", or hybrid / jev
 ```
 
+The native helper has its own tests, which need no browser or network:
+
+```sh
+python3 test/host_unit.py
+```
+
 `test/server.py` also serves `test/fixtures/*.html` (shadow DOM and React widget pages) at `http://127.0.0.1:8765/fixtures/...` for manual testing.
 
 ## Credits

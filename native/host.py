@@ -65,7 +65,11 @@ def api_key():
 def load_profile():
     if not PROFILE.is_file():
         raise ValueError("profile.local.json is missing: copy profile.example.json and fill it in")
-    return json.loads(PROFILE.read_text())
+    try:
+        return json.loads(PROFILE.read_text())
+    except ValueError:
+        # Never echo the JSON parser's line/column detail back to the page.
+        raise ValueError("profile.local.json is not valid JSON") from None
 
 
 def clean(s, n):
@@ -164,7 +168,11 @@ def resume():
     if not profile.get("resume_path"):
         raise ValueError("resume_path is not set in the profile")
     path = (ROOT / profile["resume_path"]).expanduser()
-    if path.stat().st_size > 10 * 1024 * 1024:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        raise ValueError("the resume file could not be read") from None
+    if size > 10 * 1024 * 1024:
         raise ValueError("the resume file is larger than 10 MB")
     data = path.read_bytes()
     # An optional hash makes sure the file attached is the one you meant, not a later edit.

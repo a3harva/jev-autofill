@@ -3,7 +3,9 @@
 (() => {
   if (window.__jevRun) return;
 
-  const NO_FILL = new Set(["free_text", "leave_blank", "unknown", "notifications_opt_in"]);
+  // Keys never filled: written answers, other people's details, and optional opt-ins; consent boxes
+  // (ticked by hand only) and identity numbers, bank details and passwords (never filled, listed in the report).
+  const NO_FILL = new Set(["free_text", "leave_blank", "unknown", "notifications_opt_in", "consent_yes", "password", "pan_number", "aadhaar_number", "passport_number", "bank_account"]);
   const PLACE_KEYS = new Set(["current_location", "city", "preferred_location"]);
   const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

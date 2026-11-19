@@ -115,7 +115,7 @@ def main():
             if t["expect"] is not None:
                 want = t["expect"]
             elif t["key"] == "consent_yes":
-                want = "checked"
+                want = ""  # consent boxes are never ticked; they are left for the human
             elif t["key"] == "requires_sponsorship":
                 want = profile[t["key"]].get(region, "") if region else actual
             elif t["key"] == "linkedin_url":

@@ -23,7 +23,8 @@ MAX_FIELDS = 300
 MAX_MESSAGE = 4 * 1024 * 1024
 FIELD_KEYS = json.loads((HERE / "field_keys.json").read_text())
 PROFILE = ROOT / "profile.local.json"
-NO_VALUE = {"free_text", "leave_blank", "unknown", "notifications_opt_in", "resume_upload", "work_history"}
+NO_VALUE = {"free_text", "leave_blank", "unknown", "notifications_opt_in", "resume_upload", "work_history",
+           "consent_yes", "password", "pan_number", "aadhaar_number", "passport_number", "bank_account"}
 WORKDAY_KEYS = ("work_history", "school", "degree", "major", "skills", "website_url")
 
 

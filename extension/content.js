@@ -636,6 +636,14 @@
   // One run per click. Repeats only to catch fields revealed by its own answers.
   window.__jevRun = async (title) => {
     tabTitle = title;
+    // The helper only serves the page's own site, so a frame from another site (an ad or embed) does not run.
+    if (window.top !== window.self) {
+      try {
+        void window.top.location.href;
+      } catch {
+        return { filled: 0, left: 0, error: null };
+      }
+    }
     deadline = Date.now() + 150000;
     seen = new WeakSet();
     resumeAttached = false;

@@ -1,6 +1,7 @@
 // Runs the fill on a toolbar click and relays requests to the local helper, which holds the key and profile.
 const HOST = "com.jev_auto_mapper.host";
-const active = new Set();
+// Tab id -> the top frame's origin while a fill is running.
+const active = new Map();
 
 function askHost(msg) {
   return chrome.runtime.sendNativeMessage(HOST, msg).then((res) => {
@@ -22,8 +23,20 @@ async function handle(msg) {
   throw new Error("unknown request");
 }
 
+const originOf = (url) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+};
+
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (sender.id !== chrome.runtime.id || !sender.tab || !active.has(sender.tab.id)) return;
+  // Only the top frame and frames from the same site as the top frame may ask for data.
+  // A cross-origin frame embedded in the page (an ad, a tracker, a hostile embed) must never
+  // receive profile values, the resume or work history.
+  if (sender.frameId !== 0 && originOf(sender.url) !== active.get(sender.tab.id)) return;
   handle(msg).then(reply, (e) => reply({ error: String(e.message || e) }));
   return true;
 });

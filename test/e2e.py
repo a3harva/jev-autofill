@@ -84,7 +84,9 @@ def main():
     httpd = serve(8766)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     ext = str(ROOT / "extension")
-    settings = {"mode": args.mode, "threshold": args.threshold, "maxBytes": args.max_bytes, "model": args.model}
+    # The test site is pre-confirmed so the run starts without the in-page permission bar.
+    settings = {"mode": args.mode, "threshold": args.threshold, "maxBytes": args.max_bytes, "model": args.model,
+                "sites": {"http://127.0.0.1:8766": True}}
 
     with tempfile.TemporaryDirectory() as tmp, sync_playwright() as p:
         install(pathlib.Path(tmp) / "NativeMessagingHosts")

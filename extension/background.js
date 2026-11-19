@@ -46,9 +46,77 @@ function show(tabId, text, title) {
   chrome.action.setTitle({ tabId, title });
 }
 
+// The in-page confirmation bar shown the first time the extension runs on a site.
+// Self-contained: it is serialized into the page by chrome.scripting.
+function confirmInPage(origin) {
+  return new Promise((resolve) => {
+    const old = document.getElementById("jev-autofill-confirm");
+    if (old) old.remove();
+    const bar = document.createElement("div");
+    bar.id = "jev-autofill-confirm";
+    bar.style.cssText =
+      "position:fixed;top:12px;right:12px;z-index:2147483647;background:#1f2430;color:#fff;font:13px system-ui;padding:12px 14px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.35);max-width:340px";
+    const text = document.createElement("div");
+    text.textContent = `Allow JEV Autofill to run on ${origin}? It fills your profile into this page's form fields.`;
+    text.style.marginBottom = "10px";
+    bar.appendChild(text);
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px";
+    // Only real user clicks count: a page must not be able to confirm itself.
+    const chosen = (value) => (e) => {
+      if (!e.isTrusted) return;
+      clearTimeout(timer);
+      bar.remove();
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      bar.remove();
+      resolve(null);
+    }, 90000);
+    for (const [label, value, primary] of [
+      ["Not now", null, false],
+      ["Allow once", "once", false],
+      ["Always allow", "always", true],
+    ]) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid #666;background:${primary ? "#2563eb" : "transparent"};color:#fff;cursor:pointer;font:inherit`;
+      b.addEventListener("click", chosen(value));
+      row.appendChild(b);
+    }
+    bar.appendChild(row);
+    (document.body || document.documentElement).appendChild(bar);
+  });
+}
+
+// The first fill on each site asks for permission; the answer is remembered in chrome.storage.
+async function confirmSite(tabId, origin) {
+  const { sites } = await chrome.storage.local.get("sites");
+  if (sites && sites[origin]) return "always";
+  let choice;
+  try {
+    const frames = await chrome.scripting.executeScript({ target: { tabId }, func: confirmInPage, args: [origin] });
+    choice = frames[0] && frames[0].result;
+  } catch {
+    choice = null;
+  }
+  if (choice === "always") await chrome.storage.local.set({ sites: { ...(sites || {}), [origin]: true } });
+  return choice;
+}
+
 chrome.action.onClicked.addListener(async (tab) => {
   if (active.has(tab.id)) return;
-  active.add(tab.id);
+  const origin = originOf(tab.url);
+  if (!origin) {
+    show(tab.id, "?", "JEV Autofill: cannot read this page's address");
+    return;
+  }
+  const choice = await confirmSite(tab.id, origin);
+  if (choice !== "once" && choice !== "always") {
+    show(tab.id, "?", "JEV Autofill: not confirmed for this site");
+    return;
+  }
+  active.set(tab.id, origin);
   // Calling an extension API keeps Chrome from stopping this worker during a long run.
   const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
   show(tab.id, "...", "JEV Autofill: filling");

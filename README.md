@@ -2,7 +2,7 @@
 
 A Chrome extension that fills the repetitive fields of a job application (name, email, phone, education, links, work authorization, EEO and screening questions) from a profile file on your own machine. Click the toolbar button or press **Alt+Shift+J** on an application page and it fills what it can.
 
-It never clicks Submit, Next or Apply, and it never changes a field that already has a value. A field it can't map with confidence is left for you.
+It never clicks Submit, Next or Apply, and it never changes a field that already has a value. A field it can't map with confidence is left for you. Consent, terms and privacy boxes are never ticked, and PAN, Aadhaar, passport, bank details and passwords are never filled: they are listed in the report for you to do by hand. Legal and EEO screening questions (criminal record, work authorization, clearance, gender, ethnicity, race, veteran status, disability) are answered only from your profile; a missing answer is left for you, not guessed. The first time it runs on a site, a small bar on the page asks you to confirm (once or always); your choices are remembered in `chrome.storage.local`.
 
 ## How it works
 
@@ -13,7 +13,7 @@ It never clicks Submit, Next or Apply, and it never changes a field that already
   - `hybrid`: static rules first, then [JEV](https://typesafe.ai) for fields the rules don't match, and for picking the best option in dropdowns and screening questions. Needs `TYPESAFE_API_KEY`.
   - `jev`: JEV only.
 
-  JEV sees field labels, option text and the `facts` list from your profile. It never sees your other profile values.
+  JEV sees the page title and each field's question, section and option text, plus the `facts` list from your profile — which, note, includes your work history, skills and self-identification. It never sees your other profile values, and profile values are only sent to the page you confirmed, never to an embedded frame from another site.
 
 A report of what was filled, skipped and why is written to the page as `<script id="jev-auto-mapper-report" type="application/json">`, so an automation agent can pick up only the fields that were left.
 
@@ -45,7 +45,7 @@ Then open `chrome://extensions`, turn on Developer mode, click **Load unpacked**
 
 Pay fields (`current_ctc`, `expected_ctc`, `offered_ctc`) are assumed to be yearly amounts in your local currency. A pay question that names another currency, or asks per month or per hour, is left blank.
 
-Government IDs, bank details and passwords are filled only if you put them in the profile. The example profile leaves them out on purpose.
+Government IDs, bank details and passwords are never filled even if they are in the profile; a field asking for one is reported and left for you. The example profile leaves them out on purpose.
 
 ## Tests
 

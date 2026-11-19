@@ -35,7 +35,16 @@ def read_message():
     size = struct.unpack("=I", raw)[0]
     if size > MAX_MESSAGE:
         raise ValueError("message too large")
-    return json.loads(sys.stdin.buffer.read(size))
+    body = b""
+    while len(body) < size:
+        chunk = sys.stdin.buffer.read(size - len(body))
+        if not chunk:
+            raise ValueError("truncated message")
+        body += chunk
+    try:
+        return json.loads(body)
+    except ValueError:
+        raise ValueError("malformed message")
 
 
 def send_message(obj):
@@ -155,6 +164,8 @@ def resume():
     if not profile.get("resume_path"):
         raise ValueError("resume_path is not set in the profile")
     path = (ROOT / profile["resume_path"]).expanduser()
+    if path.stat().st_size > 10 * 1024 * 1024:
+        raise ValueError("the resume file is larger than 10 MB")
     data = path.read_bytes()
     # An optional hash makes sure the file attached is the one you meant, not a later edit.
     if profile.get("resume_sha256") and hashlib.sha256(data).hexdigest() != profile["resume_sha256"]:
@@ -170,11 +181,11 @@ def workday(_):
     return data
 
 
-def ask_choice(state, instructions, criteria):
+def ask_choice(state, instructions, options, none_text=None):
     body = json.dumps({
         "model": "jev-latest",
         "state": state,
-        "questions": {"pick": {"type": "choice", "instructions": instructions, "criteria": criteria}},
+        "questions": {"pick": {"type": "choice", "instructions": instructions, "criteria": option_criteria(options, none_text)}},
     }).encode()
     headers = {"Authorization": f"Bearer {api_key()}", "Content-Type": "application/json", "User-Agent": "jev-auto-mapper/0.2"}
     for attempt in range(4):
@@ -188,12 +199,20 @@ def ask_choice(state, instructions, criteria):
                 continue
             raise ValueError(f"JEV HTTP {e.code}") from None
         picked = answer.get("choice", "none")
-        return {"index": None if picked == "none" else int(picked[1:]), "confidence": answer.get("confidence")}
+        if picked == "none":
+            return {"index": None, "confidence": answer.get("confidence")}
+        # A missing, malformed or out-of-range answer counts as no answer, never a raw error to the page.
+        if not isinstance(picked, str) or not re.fullmatch(r"o(\d+)", picked):
+            return {"index": None, "confidence": None}
+        index = int(picked[1:])
+        if index >= len(options):
+            return {"index": None, "confidence": None}
+        return {"index": index, "confidence": answer.get("confidence")}
     raise ValueError("JEV retries exhausted")
 
 
 def option_criteria(options, none_text=None):
-    criteria = {f"o{i}": clean(o, 200) for i, o in enumerate(options[:40])}
+    criteria = {f"o{i}": o for i, o in enumerate(options)}
     if none_text:
         criteria["none"] = none_text
     return criteria
@@ -204,7 +223,8 @@ def choose(msg):
     return ask_choice(
         "A job application search box returned a list of results.",
         f'The candidate\'s {clean(msg.get("kind"), 40)} is "{clean(msg.get("term"), 120)}". Which result is the same thing, allowing for different wording or a qualifier in brackets? Do not pick a merely related or similar-sounding result.',
-        option_criteria(msg["options"], "None of the listed results means the same thing"),
+        [clean(o, 200) for o in msg["options"][:40]],
+        "None of the listed results means the same thing",
     )
 
 
@@ -228,7 +248,7 @@ def answer(msg):
     return ask_choice(
         candidate_facts(),
         f'A job application asks{where}: "{clean(msg.get("question"), 400)}". Make the best educated guess from the candidate facts: which option is most likely true for this candidate? The employment history and skills are complete, so if the question asks whether the candidate has a job, status, clearance, tool or qualification those facts do not list, the answer is No. For availability, willingness, comfort or logistics questions, the answer is Yes. Prefer generic options over ones naming a specific visa or country that the facts do not mention, and prefer a real answer over declining to answer.',
-        option_criteria(msg["options"]),
+        [clean(o, 200) for o in msg["options"][:40]],
     )
 
 
@@ -238,8 +258,16 @@ HANDLERS = {"answer": answer, "choose": choose, "map": map_fields, "values": val
 def main():
     try:
         msg = read_message()
-        if msg is None:
-            return
+    except ValueError as e:
+        # Only our own clean error strings ("message too large", "malformed message", ...) reach the page.
+        send_message({"error": str(e)})
+        return
+    if msg is None:
+        return
+    if not isinstance(msg, dict) or msg.get("type") not in HANDLERS:
+        send_message({"error": "unknown request"})
+        return
+    try:
         send_message(HANDLERS[msg["type"]](msg))
     except Exception as e:
         send_message({"error": str(e) if isinstance(e, ValueError) else type(e).__name__})

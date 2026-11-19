@@ -31,7 +31,7 @@ def extension_id():
 
 def install(target=CHROME_DIR):
     wrapper = HERE / "jev_host"
-    wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{HERE / "host.py"}" "$@"\n')
+    wrapper.write_text(f'#!/bin/sh\nexec /usr/bin/env python3 "{HERE / "host.py"}" "$@"\n')
     wrapper.chmod(0o755)
     target = pathlib.Path(target)
     target.mkdir(parents=True, exist_ok=True)

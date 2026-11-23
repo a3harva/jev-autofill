@@ -189,14 +189,21 @@
     const n = parseFloat(want);
     if (Number.isNaN(n)) return undefined;
     const range = (o) => norm(o).match(/(\d+(?:\.\d+)?)\s*(?:-|–|to|,)\s*(\d+(?:\.\d+)?)/);
-    const less = (o) => norm(o).match(/(?:less than|under|below|<)\s*(\d+(?:\.\d+)?)/);
+    // A currency sign can sit between the word and the number: "Above ₹30 LPA", "Up to $50k".
+    const less = (o) => norm(o).match(/(?:less than|under|below|<)\s*\D{0,2}?(\d+(?:\.\d+)?)/);
+    const upTo = (o) => norm(o).match(/(?:up ?to|not more than|max(?:imum)?)\s*\D{0,2}?(\d+(?:\.\d+)?)/);
+    const above = (o) => norm(o).match(/(?:above|over|more than|greater than|>)\s*\D{0,2}?(\d+(?:\.\d+)?)/);
+    const andUp = (o) => norm(o).match(/(\d+(?:\.\d+)?)\s*\D{0,6}?\s(?:and|or) (?:above|more|over|higher)/);
     // "15 days" for 15: an option that is just the number with a unit.
-    const same = options.find((o) => !range(o) && !less(o) && new RegExp(`^\\D{0,3}${n}(?!\\d|\\.\\d|\\s*\\+)`).test(norm(o)));
+    const same = options.find((o) => !range(o) && !less(o) && !upTo(o) && !above(o) && new RegExp(`^\\D{0,3}${n}(?!\\d|\\.\\d|\\s*\\+)`).test(norm(o)));
     if (same) return same;
     // Brackets often share their edges (2-4, 4-6); the one starting at the number wins.
     return options.find((o) => range(o) && n >= +range(o)[1] && n < +range(o)[2]) || options.find((o) => {
       if (range(o)) return n >= +range(o)[1] && n <= +range(o)[2];
       if (less(o)) return n < +less(o)[1];
+      if (upTo(o)) return n <= +upTo(o)[1];
+      if (above(o)) return n > +above(o)[1];
+      if (andUp(o)) return n >= +andUp(o)[1];
       const plus = norm(o).match(/(\d+(?:\.\d+)?)\s*\+/);
       return plus ? n >= +plus[1] : false;
     });

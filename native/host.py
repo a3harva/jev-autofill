@@ -245,6 +245,8 @@ def candidate_facts():
         f'Citizenship: {profile.get("citizenship", "")}. Lives in {profile.get("country", "")}.',
         f"Complete employment history: {jobs}.",
         f'Skills: {profile.get("skills", "")}.',
+        # Without this the guesser had no languages and answered "Basic" to "How fluent are you in spoken Hindi?".
+        f'Languages spoken: {profile.get("spoken_languages", "")}.',
         # Without this the guesser treated the degree as unlisted and answered "No" to "Do you have a Bachelor's degree?".
         f'Education: {profile.get("degree", "")} in {profile.get("major", "")} from {profile.get("school", "")}, graduated {profile.get("graduation_year", "")}.',
         f'Self-identification: gender {profile.get("gender", "")}; ethnicity {profile.get("ethnicity", "")}; veteran status: {profile.get("veteran_status", "")}; disability: {profile.get("disability_status", "")}.',

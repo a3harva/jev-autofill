@@ -1,12 +1,13 @@
 # JEV Autofill
 
-A Chrome extension that fills the repetitive fields of a job application (name, email, phone, education, links, work authorization, EEO and screening questions) from a profile file on your own machine. Click the toolbar button or press **Alt+Shift+J** on an application page and it fills what it can.
+A Chrome extension that fills the repetitive fields of a job application (name, email, phone, education, links, work authorization, EEO and screening questions) from a profile file on your own machine. Click the toolbar button, press **Alt+Shift+J**, or click the blue **Fill with JEV** button that appears near the bottom-right of an application form, and it fills what it can.
 
-It never clicks Submit, Next or Apply, and it never changes a field that already has a value. A field it can't map with confidence is left for you. Consent, terms and privacy boxes are never ticked, and PAN, Aadhaar, passport, bank details and passwords are never filled: they are listed in the report for you to do by hand. Legal and EEO screening questions (criminal record, work authorization, clearance, gender, ethnicity, race, veteran status, disability) are answered only from your profile; a missing answer is left for you, not guessed. The first time it runs on a site, a small bar on the page asks you to confirm (once or always); your choices are remembered in `chrome.storage.local`.
+It never clicks Submit, Next or Apply, and it never changes a field that already has a value. A field it can't map with confidence is left for you. Consent, terms and privacy boxes are never ticked, and PAN, Aadhaar, passport, bank details and passwords are never filled: they are listed in the report for you to do by hand. Legal and EEO screening questions (criminal record, work authorization, clearance, gender, ethnicity, race, veteran status, disability) are answered only from your profile; a missing answer is left for you, not guessed. The first time it runs on a site, a small bar on the page asks you to confirm (once or always); your choices are remembered in `chrome.storage.local`. If an agent drives your browser, you can turn this question off on the options page.
 
 ## How it works
 
 - **`extension/`**: a Manifest V3 extension. Clicking the button injects `rules.js`, `workday.js` and `content.js` into the page and every frame, including open shadow roots. These read each field's question, map it to a canonical key such as `email` or `school`, and fill it. React, Material UI, Ant Design, Select2 and similar widgets are handled, and so is Workday's multi-step flow.
+- **`extension/launcher.js`**: shows the in-page **Fill with JEV** button on pages that look like an application form (known applicant-tracking sites, LinkedIn's Easy Apply dialog, or a job page whose form has a resume upload or two of name, email and phone). It is hidden on sign-in, search and payment forms, reacts only to trusted clicks (a page script's `.click()` is ignored), and runs the same fill as the toolbar button. Browser-automation agents can press it, which they can't do with the toolbar. Its `data-state`, `data-filled` and `data-left` attributes show the result; the × hides it on that site.
 - **`native/host.py`**: a [native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging) helper. Only this part reads your profile, your resume and the API key. A page gets only the values for the fields it actually has.
 - **Mapping modes** (set on the options page):
   - `static` (the default): regex rules in `extension/rules.js`. No network calls.
@@ -49,14 +50,17 @@ Government IDs, bank details and passwords are never filled even if they are in 
 
 ## Tests
 
-The tests load the real extension in headless Chromium against a local form of 98 unannotated fields, using the fake example profile.
+The tests load the real extension in headless Chromium against a local form of 98 unannotated fields, built from your profile (the fake example profile works).
 
 ```sh
 pip install playwright && playwright install chromium
-cp profile.example.json profile.local.json
+cp -n profile.example.json profile.local.json     # -n: never overwrite a real profile
 python3 test/build_form.py
 cd test && python3 e2e.py static                  # also: --location "London, United Kingdom", or hybrid / jev
+python3 launcher_test.py                          # when the in-page button shows, the site prompt, trusted clicks
 ```
+
+The tests read whatever `profile.local.json` holds and print labels and keys only, never values.
 
 The native helper has its own tests, which need no browser or network:
 

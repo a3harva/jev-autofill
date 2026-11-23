@@ -131,7 +131,9 @@
   async function addRow(section, prefix, tail) {
     const before = new Set(rows(prefix, tail));
     group(section).querySelector('[data-automation-id="add-button"]').click();
-    for (let i = 0; i < 20; i++) {
+    // Slow tenants draw the row after 4 s or more; giving up early left a blank row behind and a
+    // second click added another (Mondelēz, 2026-11-21). Wait up to 10 s, and never click twice.
+    for (let i = 0; i < 50; i++) {
       await sleep(200);
       const fresh = rows(prefix, tail).find((r) => !before.has(r));
       if (fresh) return fresh;
@@ -156,7 +158,13 @@
     const out = { filled: [], failed: [] };
     for (const job of data.work_history || []) {
       const all = rows("workExperience", "jobTitle");
-      const row = all.find((r) => letters(byId(`${r}--jobTitle`).value) === letters(job.title)) || all.find((r) => !byId(`${r}--jobTitle`).value && !byId(`${r}--companyName`).value) || (await addRow("Work-Experience-section", "workExperience", "jobTitle"));
+      // The resume parser often words a title differently ("Sr." / "&"), so a row with the same company
+      // AND start year is the same job; matching on title alone added duplicates. Several jobs can be at
+      // one company, so the company alone is never enough.
+      const company = (r) => letters(byId(`${r}--companyName`)?.value);
+      const startYear = (r) => byId(`${r}--startDate-dateSectionYear-input`)?.value;
+      const sameJob = (r) => letters(byId(`${r}--jobTitle`).value) === letters(job.title) || (company(r) && company(r) === letters(job.company) && startYear(r) && startYear(r) === (job.from || "").split("/")[1]);
+      const row = all.find(sameJob) || all.find((r) => !byId(`${r}--jobTitle`).value && !byId(`${r}--companyName`).value) || (await addRow("Work-Experience-section", "workExperience", "jobTitle"));
       const fill = async (name, value) => {
         const el = byId(`${row}--${name}`);
         if (el && !el.value && value) await step(out, `${job.title}: ${name}`, () => text(el, value));

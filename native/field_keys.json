@@ -31,6 +31,7 @@
  "degree": "Degree type, such as Bachelor of Technology",
  "major": "Field of study, branch or major",
  "education_level": "Highest level of education or qualification",
+ "has_bachelors_degree": "Whether the candidate holds a bachelor's degree (Yes/No question)",
  "education_start_date": "Start date or year of the degree, in an education section",
  "graduation_date": "End date of the degree, in an education section",
  "graduation_year": "Graduation, passing out or class year of the degree",

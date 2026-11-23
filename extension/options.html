@@ -4,6 +4,7 @@
 <style>
   body { font: 14px system-ui; max-width: 640px; margin: 24px auto; padding: 0 16px; }
   label { display: block; margin: 14px 0 4px; font-weight: 600; }
+  input[type=checkbox] { margin-right: 6px; }
   select { width: 100%; box-sizing: border-box; padding: 6px; }
   button { margin-top: 16px; padding: 8px 16px; }
 </style>
@@ -15,6 +16,8 @@
   <option value="hybrid">Static rules, then JEV</option>
   <option value="jev">JEV only</option>
 </select>
+<label><input type="checkbox" id="askFirst" /> Ask before the first fill on each site</label>
+<p>Leave this on unless an agent drives the browser for you: with it off, any click on the toolbar button or the in-page <b>Fill with JEV</b> button fills the page straight away.</p>
 <button id="save">Save</button>
 <span id="status"></span>
 <script src="options.js"></script>

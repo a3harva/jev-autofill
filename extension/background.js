@@ -1,4 +1,4 @@
-// Runs the fill on a toolbar click and relays requests to the local helper, which holds the key and profile.
+// Runs the fill on a toolbar or in-page button click and relays requests to the local helper, which holds the key and profile.
 const HOST = "com.jev_auto_mapper.host";
 // Tab id -> the top frame's origin while a fill is running.
 const active = new Map();
@@ -34,7 +34,14 @@ const originOf = (url) => {
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
-  if (sender.id !== chrome.runtime.id || !sender.tab || !active.has(sender.tab.id)) return;
+  if (sender.id !== chrome.runtime.id || !sender.tab) return;
+  // The in-page "Fill with JEV" button (launcher.js) asks for a run of its own tab. It sends this only
+  // on a trusted click, and the run still goes through the same per-site confirmation as the toolbar.
+  if (msg.type === "run") {
+    fillTab(sender.tab).then(reply, (e) => reply({ error: String(e.message || e) }));
+    return true;
+  }
+  if (!active.has(sender.tab.id)) return;
   // Only the top frame and frames from the same site as the top frame may ask for data.
   // A cross-origin frame embedded in the page (an ad, a tracker, a hostile embed) must never
   // receive profile values, the resume or work history.
@@ -43,9 +50,10 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   return true;
 });
 
+// The tab may already be closed (an agent closes its tab when done); a badge for it is not an error.
 function show(tabId, text, title) {
-  chrome.action.setBadgeText({ tabId, text });
-  chrome.action.setTitle({ tabId, title });
+  chrome.action.setBadgeText({ tabId, text }).catch(() => {});
+  chrome.action.setTitle({ tabId, title }).catch(() => {});
 }
 
 // The in-page confirmation bar shown the first time the extension runs on a site.
@@ -92,9 +100,10 @@ function confirmInPage(origin) {
 }
 
 // The first fill on each site asks for permission; the answer is remembered in chrome.storage.
+// The options page can turn the question off (askFirst: false), e.g. for an agent-driven setup.
 async function confirmSite(tabId, origin) {
-  const { sites } = await chrome.storage.local.get("sites");
-  if (sites && sites[origin]) return "always";
+  const { sites, askFirst } = await chrome.storage.local.get(["sites", "askFirst"]);
+  if (askFirst === false || (sites && sites[origin])) return "always";
   let choice;
   try {
     const frames = await chrome.scripting.executeScript({ target: { tabId }, func: confirmInPage, args: [origin] });
@@ -106,12 +115,13 @@ async function confirmSite(tabId, origin) {
   return choice;
 }
 
-chrome.action.onClicked.addListener(async (tab) => {
-  if (busy.has(tab.id)) return;
+// One fill of a whole tab (all frames). Used by the toolbar button, Alt+Shift+J and the in-page button.
+async function fillTab(tab) {
+  if (busy.has(tab.id)) return { error: "already filling this tab" };
   const origin = originOf(tab.url);
   if (!origin) {
     show(tab.id, "?", "JEV Autofill: cannot read this page's address");
-    return;
+    return { error: "cannot read this page's address" };
   }
   // Added synchronously, before any await, so a second click cannot start a second run
   // while the first is still waiting for the confirmation answer.
@@ -121,7 +131,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     const choice = await confirmSite(tab.id, origin);
     if (choice !== "once" && choice !== "always") {
       show(tab.id, "?", "JEV Autofill: not confirmed for this site");
-      return;
+      return { error: "not confirmed for this site" };
     }
     active.set(tab.id, origin);
     // Calling an extension API keeps Chrome from stopping this worker during a long run.
@@ -131,14 +141,18 @@ chrome.action.onClicked.addListener(async (tab) => {
     await chrome.scripting.executeScript({ target, files: ["rules.js", "workday.js", "content.js"] });
     const frames = await chrome.scripting.executeScript({ target, func: (title) => window.__jevRun(title), args: [tab.title || ""] });
     const sum = (k) => frames.reduce((n, f) => n + (f.result?.[k] || 0), 0);
-    const error = frames.map((f) => f.result?.error).find(Boolean);
+    const error = frames.map((f) => f.result?.error).find(Boolean) || null;
     if (error) show(tab.id, "!", `JEV Autofill: ${sum("filled")} filled, ${sum("left")} left. ${error}`);
     else show(tab.id, String(sum("filled")), `JEV Autofill: ${sum("filled")} filled, ${sum("left")} left`);
+    return { filled: sum("filled"), left: sum("left"), fillError: error };
   } catch (e) {
     show(tab.id, "!", `JEV Autofill: ${e.message || e}`);
+    return { error: String(e.message || e) };
   } finally {
     if (keepAlive) clearInterval(keepAlive);
     active.delete(tab.id);
     busy.delete(tab.id);
   }
-});
+}
+
+chrome.action.onClicked.addListener((tab) => fillTab(tab));

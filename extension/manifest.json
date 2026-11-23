@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "JEV Autofill",
-  "version": "0.4.6",
-  "description": "Fills job application fields from a local profile when you click the button.",
+  "version": "0.7.0",
+  "description": "Fills job application fields from a local profile when you click the toolbar button or the in-page Fill with JEV button.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAop2mkwQDOxVwUb4fqkceSzGRgFjfG3quKk5Izs3jYrsWzGp79ksGHdng1E3CTCiBeOWgQpe3LKCRA3GXnnP8k1K4q5+E6JejdBua1YvNrVSGnNZTKgpW97HkmF7i9rsGTecEQmi239xnORiwI+2EUFXcWIcVKSM2H4aLzxf/GbxJzl7qDIlEizOl52g2Bbwsq7GEE7DjIn4BX1y5AzcSIOvWZ1G17kmLrKz08tqKO8WDo9tPOSPRgwpxEKGfr/sFDFTr3eXVc0Jja88Ff/HTnOKj1r2zIsNlcgz5mfdzlzCWTSCDvVWjdvGibZZWJHR4AR3ioxbVyjvlvm5FaDzK6wIDAQAB",
   "permissions": [
     "scripting",
@@ -15,6 +15,14 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["launcher.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
   "options_page": "options.html",
   "action": {
     "default_title": "JEV Autofill"

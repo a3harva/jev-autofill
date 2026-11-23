@@ -1,7 +1,7 @@
 const $ = (id) => document.getElementById(id);
 
 chrome.storage.local.get(["mode", "askFirst"]).then((c) => {
-  $("mode").value = c.mode || "static";
+  $("mode").value = c.mode || "jev";
   $("askFirst").checked = c.askFirst !== false;
 });
 

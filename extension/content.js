@@ -21,6 +21,11 @@
   let config = {};
   let tabTitle = "";
   let deadline = 0;
+  // JEV-only mode: JEV maps every field and picks every option; no regex rules or option heuristics.
+  const jevOnly = () => config.mode === "jev";
+
+  // A request to the background worker and the helper, given up on after a while so a stuck call cannot hold the run.
+  const ask = (msg, ms = 60000) => Promise.race([chrome.runtime.sendMessage(msg), sleep(ms).then(() => ({ error: "the helper did not answer in time" }))]);
 
   function publish() {
     let el = document.getElementById("jev-auto-mapper-report");
@@ -121,6 +126,8 @@
       if (self.__jevWorkdayPresent() && self.__jevWorkdayHandles(el)) continue;
       const type = (el.getAttribute("type") || "text").toLowerCase();
       if (el.id.startsWith("iti-")) continue;
+      // react-select's stand-in for a required value: hidden from people and the keyboard, never a field of its own.
+      if (el.getAttribute("aria-hidden") === "true" && el.tabIndex === -1) continue;
       // Site-wide search and navigation are never part of an application. A dropdown's own search box (Ant Design's type=search combobox) is.
       const picker = el.getAttribute("role") === "combobox" && el.closest('[class*="select" i]');
       if (el.closest('header, nav, [role="banner"], [role="navigation"], [role="search"]') || (!picker && (el.closest('[class*="search" i], [id*="search" i]') || el.type === "search" || el.getAttribute("role") === "searchbox"))) continue;
@@ -226,7 +233,7 @@
     if (location.hostname.endsWith("linkedin.com")) return "LinkedIn uses the saved resume card";
     // One upload widget can hold several file boxes; the resume goes in once per run.
     if (resumeAttached) return "the resume is already attached";
-    const file = await chrome.runtime.sendMessage({ type: "resume" });
+    const file = await ask({ type: "resume" });
     if (!file) return "the helper did not answer";
     if (file.error) return file.error;
     const bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
@@ -241,8 +248,11 @@
     return "the file did not attach";
   }
 
+  // The option meaning the same as a value: the static heuristics by default; JEV's pick in JEV-only mode.
+  const staticChoose = async (options, value) => matchOption(options, value);
+
   // Returns null when filled, or the reason it was not.
-  async function fill(f, key, value) {
+  async function fill(f, key, value, choose = staticChoose) {
     if (key === "linkedin_url") value = value.replace(/^https?:\/\/(www\.)?linkedin\.com/i, "https://www.linkedin.com");
     if (f.control === "file") return key === "resume_upload" ? attachResume(f.el) : "only the resume is attached";
     if (f.control === "checkbox") {
@@ -251,21 +261,21 @@
       return f.el.checked ? null : "the box did not take a click";
     }
     if (f.control === "select") {
-      const label = matchOption(f.options, value);
+      const label = await choose(f.options, value);
       const opt = label && [...f.el.options].find((o) => o.text === label);
       if (!opt) return "no matching option";
       setValue(f.el, opt.value);
       return f.el.value === opt.value ? null : "the value did not hold";
     }
     if (f.control === "radio") {
-      const label = matchOption(f.options, value);
+      const label = await choose(f.options, value);
       if (!label) return "no matching option";
       const r = f.group[f.options.indexOf(label)];
       r.click();
       return r.checked ? null : "the option did not take a click";
     }
     if (f.control === "buttons") {
-      const label = matchOption(f.options, value);
+      const label = await choose(f.options, value);
       if (!label) return "no matching option";
       f.buttons[f.options.indexOf(label)].click();
       return null;
@@ -273,31 +283,24 @@
     if (f.control === "combobox") {
       const typed = f.el.tagName === "INPUT";
       let list = ownOptions(f.el, await openPicker(f.el));
-      let label = matchOption(list.map(textOf), value);
+      let label = await choose(list.map(textOf), value);
       if (!label && typed) {
         setValue(f.el, value);
         list = ownOptions(f.el, await visibleOptions());
-        label = matchOption(list.map(textOf), value);
+        label = await choose(list.map(textOf), value);
       }
       if (!label) {
         if (typed) setValue(f.el, "");
         closePicker(f.el);
         return "no matching option";
       }
-      const option = list.find((o) => textOf(o) === label);
-      option.scrollIntoView({ block: "nearest" });
-      self.__jevPress(option);
-      await sleep(typed ? 50 : 500);
-      // A library picker shows the choice beside its input, not in it.
-      const holder = reactControl(f.el) || f.el.closest(".ant-select, .el-select, .v-select, .select2-container");
-      const shown = holder ? textOf(holder) : typed ? f.el.value : textOf(f.el);
-      return (typed && !holder ? shown : shown && (norm(label).includes(norm(shown)) || norm(shown).includes(norm(label)))) ? null : "the value did not hold";
+      return pressOption(f, list.find((o) => textOf(o) === label), label);
     }
     if (!["checkbox", "file", "select", "radio", "buttons", "combobox"].includes(f.control) && f.el.getAttribute("aria-autocomplete")) {
       f.el.focus();
       setValue(f.el, value);
       const list = await visibleOptions();
-      const label = matchOption(list.map(textOf), value);
+      const label = list.length ? await choose(list.map(textOf), value) : undefined;
       if (label) self.__jevPress(list.find((o) => textOf(o) === label));
       await sleep(200);
       f.el.blur();
@@ -327,11 +330,24 @@
     }
     // A site may tidy what was entered, such as formatting a phone number or completing a place name.
     if (f.el.value === value || ((f.control === "tel" || /phone/.test(key)) && digits(value).length >= 7 && digits(f.el.value).endsWith(digits(value).slice(-10))) || (value.length > 3 && norm(f.el.value).startsWith(norm(value).slice(0, 4)))) return null;
-    return PLACE_KEYS.has(key) && f.el.tagName === "INPUT" ? typeahead(f.el, value) : "the value did not hold";
+    return PLACE_KEYS.has(key) && f.el.tagName === "INPUT" ? typeahead(f.el, value, choose === staticChoose ? null : choose) : "the value did not hold";
+  }
+
+  // Presses a picker's option and checks that the picker now shows it.
+  async function pressOption(f, option, label) {
+    const typed = f.el.tagName === "INPUT";
+    option.scrollIntoView({ block: "nearest" });
+    self.__jevPress(option);
+    await sleep(typed ? 50 : 500);
+    // A library picker shows the choice beside its input, not in it.
+    const holder = reactControl(f.el) || f.el.closest(".ant-select, .el-select, .v-select, .select2-container");
+    const shown = holder ? textOf(holder) : typed ? f.el.value : textOf(f.el);
+    return (typed && !holder ? shown : shown && (norm(label).includes(norm(shown)) || norm(shown).includes(norm(label)))) ? null : "the value did not hold";
   }
 
   // A place box that keeps only a value picked from its suggestions: the city is typed key by key and the best suggestion pressed.
-  async function typeahead(el, value) {
+  // In JEV-only mode JEV picks among the suggestions (choose); otherwise the one naming the region wins.
+  async function typeahead(el, value, choose) {
     const city = value.split(",")[0].trim();
     const region = norm(value.split(",")[1] || "");
     const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
@@ -355,7 +371,12 @@
         // The innermost element is the one a click lands on.
         .filter((o, _, all) => !all.some((x) => x !== o && o.contains(x)));
       if (!hits.length) continue;
-      const pick = hits.find((o) => region && norm(textOf(o)).includes(region)) || hits[0];
+      const label = choose && (await choose(hits.map(textOf), value));
+      if (choose && !label) {
+        el.blur();
+        return "no suggestion was the same place";
+      }
+      const pick = choose ? hits.find((o) => textOf(o) === label) : hits.find((o) => region && norm(textOf(o)).includes(region)) || hits[0];
       pick.scrollIntoView({ block: "nearest" });
       self.__jevPress(pick);
       await sleep(400);
@@ -504,11 +525,11 @@
         options = options.filter((o) => score(o) > 0 || /^other\b/i.test(o)).sort((a, b) => score(b) - score(a)).slice(0, 40);
       }
       // A known value only needs matching to the wording here; otherwise the question itself is answered.
-      const ask = value ? { type: "choose", kind: entry.key, term: value, options } : { type: "answer", question: f.label, section: f.section, options };
-      let res = options.length ? await chrome.runtime.sendMessage(ask) : null;
+      const question = value ? { type: "choose", kind: entry.key, term: value, options } : { type: "answer", question: f.label, section: f.section, options };
+      let res = options.length ? await ask(question) : null;
       let source = "jev-match";
       if (options.length && (res?.index == null || res.confidence < threshold)) {
-        res = await chrome.runtime.sendMessage({ type: "answer", question: f.label, section: f.section, options });
+        res = await ask({ type: "answer", question: f.label, section: f.section, options });
         source = "jev-guess";
       }
       if (res?.index == null) {
@@ -565,8 +586,156 @@
     return atHome.every(Boolean) ? "home" : atHome.some(Boolean) ? null : "abroad";
   }
 
+  // Ticked or answered by hand only, whatever key a field was mapped to: consent, terms, privacy and opt-ins.
+  const CONSENT = /\bi (hereby )?(agree|consent|accept|acknowledge|authori[sz]e)\b|\bconsent\b|privacy (policy|notice|statement)|terms (and|&) conditions|terms of (use|service)|newsletter|marketing (e-?mails?|communications?|messages?)|job alerts?|(sms|whatsapp|text message)s? (updates|alerts|notifications)/i;
+
+  const pickRequest = (f, entry, value, options, guess) => ({ id: f.id, control: f.control, question: f.label, section: f.section, key: entry.key, value: typeof value === "string" ? value : "", options, guess });
+
+  // JEV picks one option for one field, such as a suggestion under a typed box. Returns the option's text.
+  async function pickRaw(f, entry, value, options, guess) {
+    const res = await ask({ type: "pick", title: document.title, threshold: config.threshold ?? 0.9, fields: [pickRequest(f, entry, value, options.slice(0, 300), guess)] }, 90000);
+    if (!res || res.error) return null;
+    report.jev.push({ calls: res.calls, inputTokens: res.inputTokens, ms: res.ms, fields: 1 });
+    return res.picked?.[f.id] || null;
+  }
+  async function pickOne(f, key, value, options) {
+    if (!options.length) return undefined;
+    const p = await pickRaw(f, { key }, value, options, false);
+    return p && p.index != null ? options[p.index] : undefined;
+  }
+
+  // A picker is read, answered and filled in one go: its list is open only while it has focus, and on
+  // some pages a list left open would be read as the next picker's.
+  async function pickCombobox({ f, entry, value, sensitive }, threshold) {
+    const typed = f.el.tagName === "INPUT";
+    let list = ownOptions(f.el, await openPicker(f.el));
+    if (typed && value && (!list.length || list.length > 60)) {
+      for (const term of [...new Set([value, value.split(",")[0].trim()])]) {
+        setValue(f.el, term);
+        list = ownOptions(f.el, await visibleOptions());
+        if (list.length) break;
+      }
+    }
+    list = list.filter((o) => textOf(o));
+    const giveUp = (reason, extra = {}) => {
+      if (typed) setValue(f.el, "");
+      closePicker(f.el);
+      report.skipped.push({ ...entry, ...extra, reason });
+    };
+    if (!list.length) return giveUp("no options to choose from");
+    const options = list.map(textOf);
+    const p = await pickRaw(f, entry, value, options, !sensitive);
+    if (!p || p.index == null) return giveUp(value ? "no option matches the profile" : "JEV had no answer");
+    if (sensitive && !(p.confidence >= threshold)) return giveUp("sensitive question, JEV unsure: answer it yourself", { answer: options[p.index], confidence: p.confidence });
+    const done = { ...entry, source: p.how === "match" ? "jev-match" : "jev-guess", keyConfidence: entry.confidence, confidence: p.confidence, answer: options[p.index] };
+    const why = await pressOption(f, list[p.index], options[p.index]);
+    if (why) report.failed.push({ ...done, reason: why });
+    else report.filled.push(done);
+  }
+
+  // JEV-only mode: every choice field (select, radios, buttons, picker, tick box) is answered by JEV in
+  // batched calls, from the profile entry of the key JEV mapped it to, or a best guess from the facts.
+  async function pickAll(choices, values, threshold) {
+    const asks = [];
+    const pickers = [];
+    for (const c of choices) {
+      const { f, entry, m, sure } = c;
+      const key = m?.key;
+      if (Date.now() > deadline) {
+        report.skipped.push({ ...entry, reason: "ran out of time" });
+        continue;
+      }
+      // Never-filled and opt-in keys stay unfilled at any confidence; a sure "leave blank" is respected.
+      if (key && (NEVER_FILL.has(key) || key === "notifications_opt_in" || (sure && key === "leave_blank"))) {
+        report.skipped.push({ ...entry, reason: NEVER_FILL.has(key) ? "never filled: enter it yourself" : "left for the agent" });
+        continue;
+      }
+      let value = sure && !NO_FILL.has(key) ? values[key] : undefined;
+      if (value && typeof value === "object") value = value[jobRegion(f)];
+      if (typeof value !== "string") value = undefined;
+      // A legal or EEO question without a profile answer is never guessed.
+      const sensitive = SENSITIVE.test(f.label) || SENSITIVE_KEYS.has(key);
+      if (!value && sensitive) {
+        report.skipped.push({ ...entry, reason: "sensitive question: answer it yourself" });
+        continue;
+      }
+      if (f.control === "combobox") pickers.push({ ...c, value, sensitive });
+      else asks.push({ ...c, value, sensitive, options: f.control === "checkbox" ? ["Tick it", "Leave it unticked"] : f.options });
+    }
+    await pickBatch(asks, threshold);
+    for (const c of pickers) {
+      if (Date.now() > deadline) {
+        report.skipped.push({ ...c.entry, reason: "ran out of time" });
+        continue;
+      }
+      report.timings.push([c.entry.label.slice(0, 50), Date.now()]);
+      publish();
+      try {
+        await pickCombobox(c, threshold);
+      } catch (e) {
+        report.failed.push({ ...c.entry, reason: String(e) });
+      }
+    }
+  }
+
+  // Selects, radios, button rows and tick boxes show all their options, so one call answers them all.
+  async function pickBatch(asks, threshold) {
+    for (const a of asks.filter((x) => !x.options.length)) report.skipped.push({ ...a.entry, reason: "no options to choose from" });
+    asks = asks.filter((a) => a.options.length);
+    if (!asks.length) return;
+    const res = await ask({ type: "pick", title: document.title, threshold: config.threshold ?? 0.9, fields: asks.map((a) => pickRequest(a.f, a.entry, a.value, a.options.slice(0, 300), !a.sensitive)) }, 150000);
+    if (!res || res.error) {
+      report.error = res ? res.error : "the helper did not answer";
+      asks.forEach((a) => report.skipped.push({ ...a.entry, reason: "JEV did not answer" }));
+      return;
+    }
+    report.jev.push({ calls: res.calls, inputTokens: res.inputTokens, ms: res.ms, fields: asks.length });
+    for (const { f, entry, value, sensitive, options } of asks) {
+      const p = res.picked?.[f.id];
+      if (!p || p.index == null) {
+        report.skipped.push({ ...entry, reason: value ? "no option matches the profile" : "JEV had no answer" });
+        continue;
+      }
+      // A legal or EEO answer is filled only when JEV is sure it says what the profile says.
+      if (sensitive && !(p.confidence >= threshold)) {
+        report.skipped.push({ ...entry, reason: "sensitive question, JEV unsure: answer it yourself", answer: options[p.index], confidence: p.confidence });
+        continue;
+      }
+      const done = { ...entry, source: p.how === "match" ? "jev-match" : "jev-guess", keyConfidence: entry.confidence, confidence: p.confidence, answer: options[p.index] };
+      if (Date.now() > deadline) {
+        report.skipped.push({ ...done, reason: "ran out of time" });
+        continue;
+      }
+      try {
+        let why;
+        if (f.control === "checkbox") {
+          if (p.index === 0 && !f.el.checked) f.el.click();
+          why = p.index === 0 && !f.el.checked ? "the box did not take a click" : null;
+          if (p.index !== 0) {
+            report.skipped.push({ ...done, reason: "JEV left it unticked" });
+            continue;
+          }
+        } else if (f.control === "select") {
+          const opt = [...f.el.options].filter((o) => o.value)[p.index];
+          setValue(f.el, opt.value);
+          why = f.el.value === opt.value ? null : "the value did not hold";
+        } else if (f.control === "radio") {
+          f.group[p.index].click();
+          why = f.group[p.index].checked ? null : "the option did not take a click";
+        } else {
+          f.buttons[p.index].click();
+          why = null;
+        }
+        if (why) report.failed.push({ ...done, reason: why });
+        else report.filled.push(done);
+      } catch (e) {
+        report.failed.push({ ...done, reason: String(e) });
+      }
+    }
+  }
+
   async function mapAll(fields) {
-    const mode = config.mode || "static";
+    const mode = config.mode || "jev";
     const out = new Map();
     const needJev = [];
     for (const f of fields) {
@@ -576,18 +745,23 @@
       else out.set(f, { key: "unknown", confidence: 1, source: "static" });
     }
     if (needJev.length) {
-      const res = await chrome.runtime.sendMessage({
-        type: "map",
-        title: document.title,
-        fields: needJev.map(({ id, control, label, section, options }) => ({ id, control, label, section, options }))
-      });
+      const res = await ask(
+        {
+          type: "map",
+          title: document.title,
+          fields: needJev.map(({ id, control, label, section, options }) => ({ id, control, label, section, options })),
+          // JEV-only mode gives an unsure mapping a second, yes-or-no look instead of leaving the field.
+          verifyBelow: mode === "jev" ? config.threshold ?? 0.9 : undefined
+        },
+        120000
+      );
       if (!res || res.error) {
         report.error = res ? res.error : "the helper did not answer";
       } else {
         report.jev.push({ calls: res.calls, inputTokens: res.inputTokens, model: res.model, ms: res.ms, fields: needJev.length });
         for (const f of needJev) {
           const m = res.mapped[f.id];
-          if (m) out.set(f, { ...m, source: "jev" });
+          if (m) out.set(f, { key: m.key, confidence: m.confidence, source: m.verified ? "jev-verified" : "jev" });
         }
       }
     }
@@ -614,25 +788,31 @@
     const threshold = config.threshold ?? 0.9;
     const todo = [];
     const unanswered = [];
+    const choices = [];
     const others = aboutSomeoneElse(fields);
     const leave = (f, entry, reason, value) => (isChoice(f) && entry.key !== "notifications_opt_in" ? unanswered.push({ f, entry, reason, value }) : report.skipped.push({ ...entry, reason }));
     for (const f of fields) {
       let m = mapped.get(f);
-      if (f.control === "select" && dialCodes(f.options)) m = { key: "phone_country_code", confidence: 1, source: "static" };
-      if (others.has(f) || (m && /_ctc$/.test(m.key) && self.payElsewhere(f.label))) m = { key: "leave_blank", confidence: 1, source: "static" };
+      if (!jevOnly() && f.control === "select" && dialCodes(f.options)) m = { key: "phone_country_code", confidence: 1, source: "static" };
+      // Guards, not matching: another person's details and pay in another currency are left blank,
+      // and a consent or opt-in question is never answered, whatever key JEV gave it.
+      if (others.has(f) || (m && /_ctc$/.test(m.key) && self.payElsewhere(f.label))) m = { key: "leave_blank", confidence: 1, source: "guard" };
+      if (m && m.source !== "static" && CONSENT.test(f.label) && !NO_FILL.has(m.key)) m = { key: "consent_yes", confidence: 1, source: "guard" };
       const entry = { id: f.id, label: f.label, control: f.control, key: m?.key ?? null, confidence: m?.confidence ?? null, source: m?.source ?? null };
-      if (!m) leave(f, entry, "no answer");
+      if (jevOnly() && (isChoice(f) || f.control === "checkbox")) choices.push({ f, entry, m, sure: Boolean(m) && m.confidence >= threshold });
+      else if (!m) leave(f, entry, "no answer");
       else if (m.confidence < threshold) leave(f, entry, "low confidence");
       else if (m.key === "unknown") leave(f, entry, "left for the agent");
       else if (NEVER_FILL.has(m.key)) leave(f, entry, "never filled: enter it yourself");
       else if (NO_FILL.has(m.key)) leave(f, entry, "left for the agent");
       else todo.push({ f, entry });
     }
-    const keys = [...new Set(todo.map((t) => t.entry.key).filter((k) => k !== "resume_upload" && k !== "todays_date"))];
+    const sureKeys = [...todo, ...choices.filter((c) => c.sure)].map((t) => t.entry.key);
+    const keys = [...new Set(sureKeys.filter((k) => k && k !== "resume_upload" && k !== "todays_date" && !NO_FILL.has(k)))];
     if (keys.includes("phone") || keys.includes("phone_with_country_code")) keys.push("phone", "phone_with_country_code", "phone_country_code");
-    const languageBoxes = fields.filter((f) => f.control === "checkbox" && (!mapped.get(f) || mapped.get(f).key === "unknown" || mapped.get(f).confidence < threshold));
+    const languageBoxes = jevOnly() ? [] : fields.filter((f) => f.control === "checkbox" && (!mapped.get(f) || mapped.get(f).key === "unknown" || mapped.get(f).confidence < threshold));
     if (languageBoxes.length) keys.push("spoken_languages");
-    const res = keys.length ? await chrome.runtime.sendMessage({ type: "values", keys }) : { values: {} };
+    const res = keys.length ? await ask({ type: "values", keys }) : { values: {} };
     if (!res || res.error) throw new Error(res ? res.error : "the helper did not answer");
     profile = res.values;
     home = res.home || null;
@@ -659,7 +839,7 @@
         continue;
       }
       try {
-        const why = await fill(f, entry.key, value);
+        const why = await fill(f, entry.key, value, jevOnly() ? (options, v) => pickOne(f, entry.key, v, options) : staticChoose);
         if (why === "no matching option" && isChoice(f)) leave(f, entry, why, typeof value === "string" ? value : undefined);
         else if (why) report.failed.push({ ...entry, reason: why });
         else report.filled.push(entry);
@@ -676,7 +856,8 @@
         if (f.el.checked) report.filled.push({ id: f.id, label: f.label, control: f.control, key: "spoken_languages", confidence: 1, source: "static" });
       }
     }
-    if (config.mode !== "static") await answerWithJev(unanswered, threshold);
+    if (jevOnly()) await pickAll(choices, res.values, threshold);
+    else if (config.mode !== "static") await answerWithJev(unanswered, threshold);
     else unanswered.forEach(({ entry, reason }) => report.skipped.push({ ...entry, reason }));
     return fields.length;
   }
@@ -692,16 +873,17 @@
         return { filled: 0, left: 0, error: null };
       }
     }
-    deadline = Date.now() + 150000;
+    // JEV-only mode makes a few batched calls per pass; four minutes leaves room for slow pickers too.
+    deadline = Date.now() + 240000;
     seen = new WeakSet();
     resumeAttached = false;
     report = { filled: [], skipped: [], failed: [], jev: [], timings: [], error: null, done: false };
     publish();
     config = await chrome.storage.local.get(["mode", "threshold"]);
-    config.mode = config.mode || "static";
+    config.mode = config.mode || "jev";
     try {
       if (self.__jevWorkdayPresent()) {
-        const data = await chrome.runtime.sendMessage({ type: "workday" });
+        const data = await ask({ type: "workday" });
         if (!data || data.error) throw new Error(data ? data.error : "the helper did not answer");
         const done = await self.__jevWorkday(data);
         for (const label of done.filled) report.filled.push({ label, control: "workday" });

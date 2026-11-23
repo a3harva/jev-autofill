@@ -12,10 +12,11 @@
 <p>The API key and profile stay in this project's files and are read by the local helper. The JEV modes need <code>TYPESAFE_API_KEY</code> in <code>.env</code>.</p>
 <label for="mode">Mapping mode</label>
 <select id="mode">
-  <option value="static">Static rules only</option>
-  <option value="hybrid">Static rules, then JEV</option>
-  <option value="jev">JEV only</option>
+  <option value="jev">JEV judges every field and option (recommended)</option>
+  <option value="hybrid">Static rules, then JEV for what they miss</option>
+  <option value="static">Static rules only (no network calls)</option>
 </select>
+<p>In the JEV mode every field is mapped by JEV and every dropdown, radio, button row and tick box is answered by JEV, from your profile or, for a screening question your profile doesn't answer, its best guess from your <code>facts</code>. The safety rules still apply in every mode: nothing is submitted, consent boxes, IDs, bank details and passwords are never filled, and legal and EEO questions are never guessed.</p>
 <label><input type="checkbox" id="askFirst" /> Ask before the first fill on each site</label>
 <p>Leave this on unless an agent drives the browser for you: with it off, any click on the toolbar button or the in-page <b>Fill with JEV</b> button fills the page straight away.</p>
 <button id="save">Save</button>

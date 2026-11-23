@@ -18,7 +18,7 @@
  "postal_code": "Postal, ZIP or PIN code",
  "country": "Country of residence",
  "full_address": "Whole mailing address in one field",
- "current_location": "Where the candidate lives or is based now",
+ "current_location": "Where the candidate lives or is based now, or the city and state they will live in while doing this job",
  "preferred_location": "Preferred office or desired work location",
  "willing_to_relocate": "Willing to relocate, yes or no",
  "remote_preference": "Remote, hybrid or onsite preference",

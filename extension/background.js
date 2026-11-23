@@ -15,7 +15,11 @@ function askHost(msg) {
 async function handle(msg) {
   if (msg.type === "map" && Array.isArray(msg.fields)) {
     const { model, maxBytes } = await chrome.storage.local.get(["model", "maxBytes"]);
-    return askHost({ type: "map", title: msg.title, fields: msg.fields, model, maxBytes });
+    return askHost({ type: "map", title: msg.title, fields: msg.fields, model, maxBytes, verifyBelow: typeof msg.verifyBelow === "number" ? msg.verifyBelow : undefined });
+  }
+  if (msg.type === "pick" && Array.isArray(msg.fields)) {
+    const { maxBytes } = await chrome.storage.local.get(["maxBytes"]);
+    return askHost({ type: "pick", title: msg.title, fields: msg.fields, threshold: msg.threshold, maxBytes });
   }
   if (msg.type === "values" && Array.isArray(msg.keys)) return askHost({ type: "values", keys: msg.keys });
   if (msg.type === "resume") return askHost({ type: "resume" });

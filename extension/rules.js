@@ -3,6 +3,13 @@
   const EDU = /educat|school|academic|qualification/i;
   const OTHER_PERSON = /\b(reference|referee|manager|supervisor|emergency|next of kin|guardian|spouse)\b/i;
   const RULES = [
+    // Workday's "Given Name (Local)" etc. are for names in a local script; filling them duplicates the name (2026-11-21).
+    [/\blocal\b.*\bname\b|\bname\b.*\blocal\b/, "leave_blank"],
+    // "Phone Extension" is not the phone number.
+    [/\bextension\b|\bext\b\.?$|phone ext/, "leave_blank"],
+    // Address lines 2-3, door/flat numbers: the whole address goes in line 1, so these stay empty instead of repeating it.
+    [/address( line)? ?(2|3|two|three)\b|\bline ?(2|3)\b|door|flat no|house no|apartment|suite|building name/, "leave_blank"],
+    [/(do|does) you (have|hold|possess)( a| an)? (bachelor|undergraduate|graduate degree|degree)|bachelor'?s? degree\??$|completed (a |your )?(bachelor|graduation|degree)/, "has_bachelors_degree"],
     [/portfolio/, "website_url"],
     [/^(today'?s )?date$/, "todays_date"],
     [/cover letter/, "leave_blank"],

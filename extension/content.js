@@ -265,11 +265,11 @@
     }
     if (f.control === "combobox") {
       const typed = f.el.tagName === "INPUT";
-      let list = await openPicker(f.el);
+      let list = ownOptions(f.el, await openPicker(f.el));
       let label = matchOption(list.map(textOf), value);
       if (!label && typed) {
         setValue(f.el, value);
-        list = await visibleOptions();
+        list = ownOptions(f.el, await visibleOptions());
         label = matchOption(list.map(textOf), value);
       }
       if (!label) {
@@ -301,7 +301,11 @@
       if (days) value = localDate(new Date(Date.now() + days[1] * 864e5));
       if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return "not a full date";
     }
-    if (key === "phone") await setDialCode(f.el);
+    // With a separate dialling-code picker the number box takes the national number only; the full
+    // +91 number there showed up as "+91-91-…" on Workday (2026-11-21).
+    if (key === "phone" || key === "phone_with_country_code") {
+      if ((await setDialCode(f.el)) && profile.phone) value = profile.phone;
+    }
     f.el.focus();
     setValue(f.el, value);
     f.el.blur();
@@ -357,21 +361,22 @@
   }
 
   // A dialling-code picker beside the phone box is set to the candidate's code first, so the number is read in the right country.
+  // Returns true when there is such a picker, so the caller types only the national number.
   async function setDialCode(el) {
     const code = (profile.phone_country_code || "").replace(/\D/g, "");
-    if (!code) return;
+    if (!code) return false;
     const shown = (p) => (p.tagName === "SELECT" ? textOf(p.selectedOptions && p.selectedOptions[0]) : p.value || shownOf(p));
     let box = el.parentElement;
     for (let depth = 0; box && depth < 5; depth++, box = box.parentElement) {
       const pick = deepAll(box, 'select, input[role="combobox"], [role="combobox"], button[aria-haspopup]').find((p) => p !== el && /\+\s?\d{1,4}/.test(shown(p)));
       if (pick) {
-        if (new RegExp(`\\+\\s?${code}\\b`).test(shown(pick))) return;
+        if (new RegExp(`\\+\\s?${code}\\b`).test(shown(pick))) return true;
         const wanted = (options) => options.find((o) => home?.country && norm(o).includes(norm(home.country)) && new RegExp(`\\+\\s?${code}\\b`).test(o)) || options.find((o) => new RegExp(`^\\+\\s?${code}\\b|\\(\\+${code}\\)`).test(o.trim())) || (home?.country && matchOption(options, home.country));
         if (pick.tagName === "SELECT") {
           const label = wanted([...pick.options].map((o) => o.text));
           const opt = label && [...pick.options].find((o) => o.text === label);
           if (opt) setValue(pick, opt.value);
-          return;
+          return true;
         }
         pick.scrollIntoView({ block: "center" });
         pick.focus();
@@ -382,11 +387,12 @@
         if (label) self.__jevPress(list.find((o) => textOf(o) === label));
         else closePicker(pick);
         await sleep(300);
-        return;
+        return true;
       }
       // Past the phone's own block: another box means the picker, if any, belongs to a different field.
-      if (deepAll(box, "input:not([type=hidden]), textarea").some((x) => x !== el && x.getAttribute("role") !== "combobox")) return;
+      if (deepAll(box, "input:not([type=hidden]), textarea").some((x) => x !== el && x.getAttribute("role") !== "combobox")) return false;
     }
+    return false;
   }
 
   // A list of dialling codes beside a phone box, whatever its label says.
@@ -394,14 +400,27 @@
 
   // Options from ARIA lists and the common libraries that draw theirs without a role (Ant Design, Element, Select2, Angular Material, PrimeNG).
   const OPTION = '[role="option"], .ant-select-item-option, .el-select-dropdown__item, .select2-results__option, mat-option, .p-dropdown-item';
+  // The country list of an intl-tel-input phone box, whose options are dialling codes, not answers. Its
+  // own classes only: a bare "iti" substring also matched "transition" in Tailwind classes, and on
+  // Talentlo (2026-11-23) the page wrapper's motion-reduce:transition-none hid every option.
+  const PHONE_WIDGET = '.iti, [class*="iti__"], [class*="iti--"]';
 
   async function visibleOptions(tries = 10) {
     for (let i = 0; i < tries; i++) {
       await sleep(200);
-      const list = deepAll(document, OPTION).filter((o) => visible(o) && !/^select\b/i.test(textOf(o)) && !o.closest('[class*="iti"]'));
+      const list = deepAll(document, OPTION).filter((o) => visible(o) && !/^select\b/i.test(textOf(o)) && !o.closest(PHONE_WIDGET));
       if (list.length) return list;
     }
     return [];
+  }
+
+  // Another picker's list can still be open (many close only on an outside press), and its options
+  // can share wording such as "3 years". The field's own list, named by aria-controls, wins when there is one.
+  function ownOptions(el, list) {
+    const ids = `${el.getAttribute("aria-controls") || ""} ${el.getAttribute("aria-owns") || ""}`.split(/\s+/).filter(Boolean);
+    const boxes = ids.map((id) => byId(el, id)).filter(Boolean);
+    const mine = boxes.length ? list.filter((o) => boxes.some((b) => b.contains(o))) : [];
+    return mine.length ? mine : list;
   }
 
   const reactControl = (el) => el.closest('[class*="select__control"]');
@@ -603,7 +622,7 @@
       else todo.push({ f, entry });
     }
     const keys = [...new Set(todo.map((t) => t.entry.key).filter((k) => k !== "resume_upload" && k !== "todays_date"))];
-    if (keys.includes("phone")) keys.push("phone_with_country_code", "phone_country_code");
+    if (keys.includes("phone") || keys.includes("phone_with_country_code")) keys.push("phone", "phone_with_country_code", "phone_country_code");
     const languageBoxes = fields.filter((f) => f.control === "checkbox" && (!mapped.get(f) || mapped.get(f).key === "unknown" || mapped.get(f).confidence < threshold));
     if (languageBoxes.length) keys.push("spoken_languages");
     const res = keys.length ? await chrome.runtime.sendMessage({ type: "values", keys }) : { values: {} };

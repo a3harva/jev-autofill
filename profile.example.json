@@ -42,6 +42,7 @@
 
   "school": "Example Institute of Technology",
   "degree": "Bachelor of Technology",
+  "has_bachelors_degree": "Yes",
   "major": "Electronics & Communication",
   "education_level": "Bachelor of Technology",
   "education_start_date": "2018",

@@ -32,7 +32,8 @@
     [/\baws\b/, "years_aws"],
     [/\bcloud\b.*(year|experience)|(year|experience).*\bcloud\b/, "years_cloud"],
     [/offer.*(ctc|salary|package)|(ctc|salary|package).*offer/, "offered_ctc"],
-    [/expected.*(ctc|salary|compensation|pay)|desired (salary|pay|compensation|ctc)|salary (expectation|requirement)/, "expected_ctc"],
+    // "At what annual CTC would you be comfortable joining?" asks for the expected figure too (WIN on Greenhouse, 2026-11-23).
+    [/expected.*(ctc|salary|compensation|pay)|desired (salary|pay|compensation|ctc)|salary (expectation|requirement)|(ctc|salary|compensation|package)\b.*\b(join|accept|comfortable)|\b(join|accept|comfortable)\b.*(ctc|salary|compensation|package)/, "expected_ctc"],
     [/\bctc\b|current (salary|compensation)/, "current_ctc"],
     [/offer in hand|another offer|other offer/, "offer_in_hand"],
     [/notice period|available to join|days to join|joining (time|period)/, "notice_period_days"],
@@ -65,6 +66,8 @@
     [/relocat/, "willing_to_relocate"],
     [/work type|employment type|job type/, "employment_type"],
     [/(happy|willing|comfortable|able|open|ok|okay) (to |with )?(work(ing)?|com(e|ing)|commut(e|ing))( \S+){0,5} (office|on-?site)|work(ing)? (from|in|at) (the |our )?office/, "willing_to_work_onsite"],
+    // "Which city and state will you live in while working remotely?" asks where, not how (WIN on Greenhouse, 2026-11-23).
+    [/(which|what) (city|town)\b.*\b(live|living|reside|based)|city (and|&) state/, "current_location"],
     [/work mode|remote|hybrid|on-?site/, "remote_preference"],
     [/^country( of residence)?$|what country|which country/, "country"],
     [/based|current location|^location$/, "current_location"],

@@ -8,6 +8,7 @@ import json
 import pathlib
 import struct
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -131,6 +132,81 @@ class AskChoice(unittest.TestCase):
     def test_malformed_is_no_answer(self):
         for bad in ("zz", "", "o-one", None, {"x": 1}):
             self.assertIsNone(self.ask(bad)["index"], f"{bad!r} must not raise")
+
+
+class Post(unittest.TestCase):
+    def test_keep_alive_blank_lines_hit_the_overall_deadline(self):
+        class Trickle:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read1(self, n):
+                time.sleep(0.05)
+                return b"\n"
+
+        started = time.monotonic()
+        with mock.patch.object(host.urllib.request, "urlopen", return_value=Trickle()):
+            with self.assertRaises(ValueError) as cm:
+                host.post("k", b"{}", deadline=time.monotonic() + 1.3)
+        self.assertEqual(str(cm.exception), "JEV did not answer in time")
+        self.assertGreater(time.monotonic() - started, 1.2)
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_unreachable_is_a_clean_error(self):
+        with mock.patch.object(host.urllib.request, "urlopen", side_effect=host.urllib.error.URLError("x")):
+            with self.assertRaises(ValueError) as cm:
+                host.post("k", b"{}")
+        self.assertEqual(str(cm.exception), "could not reach JEV")
+
+
+class Pick(unittest.TestCase):
+    """The combined choice call: a match round, then a guess round only for what may be guessed."""
+
+    def run_pick(self, fields, answers_by_round):
+        bodies = []
+
+        def fake_post(key, body, deadline=None):
+            sent = json.loads(body)
+            bodies.append(sent)
+            answers = answers_by_round[len(bodies) - 1]
+            return {"answers": {q: answers[q] for q in sent["questions"] if q in answers}}
+
+        with mock.patch.object(host, "api_key", return_value="k"), mock.patch.object(host, "post", side_effect=fake_post), \
+             mock.patch.object(host, "candidate_facts", return_value="Candidate facts: none"):
+            return host.pick_fields({"title": "t", "fields": fields}), bodies
+
+    def field(self, **kw):
+        return {"id": "a", "control": "select", "question": "Q?", "section": "", "key": "gender", "value": "Female", "options": ["Male", "Female"], "guess": True, **kw}
+
+    def test_confident_match_needs_no_guess(self):
+        res, bodies = self.run_pick([self.field()], [{"p0": {"choice": "o1", "confidence": 0.99}}])
+        self.assertEqual(res["picked"]["a"], {"index": 1, "confidence": 0.99, "how": "match"})
+        self.assertEqual(len(bodies), 1)
+        self.assertNotIn("Candidate facts", bodies[0]["state"])
+
+    def test_no_match_falls_back_to_a_guess_with_facts(self):
+        res, bodies = self.run_pick([self.field()], [{"p0": {"choice": "none", "confidence": 0.9}}, {"p0": {"choice": "o0", "confidence": 0.7}}])
+        self.assertEqual(res["picked"]["a"]["how"], "guess")
+        self.assertIn("Candidate facts", bodies[1]["state"])
+
+    def test_a_field_that_may_not_be_guessed_is_never_guessed(self):
+        res, bodies = self.run_pick([self.field(guess=False)], [{"p0": {"choice": "none", "confidence": 0.9}}])
+        self.assertIsNone(res["picked"]["a"]["index"])
+        self.assertEqual(len(bodies), 1)
+
+    def test_never_filled_keys_are_never_sent(self):
+        res, bodies = self.run_pick([self.field(key="consent_yes", value="Yes"), self.field(id="b", key="password", value="x")], [{}])
+        self.assertEqual(res["picked"], {})
+        self.assertEqual(bodies, [])
+
+    def test_tick_box_wording_is_the_helpers(self):
+        _, bodies = self.run_pick([self.field(control="checkbox", key=None, value="", options=["anything"])], [{}, {}])
+        criteria = bodies[0]["questions"]["p0"]["criteria"]
+        self.assertEqual([criteria["o0"], criteria["o1"]], host.TICK)
+        self.assertNotIn("none", criteria)
 
 
 class Profile(unittest.TestCase):

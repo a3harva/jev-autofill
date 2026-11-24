@@ -9,6 +9,7 @@ import hashlib
 import json
 import pathlib
 import re
+import socket
 import struct
 import sys
 import time
@@ -19,6 +20,11 @@ HERE = pathlib.Path(__file__).parent
 ROOT = HERE.parent
 ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 RETRYABLE = {429, 529}
+# Seconds one JEV request may take in all, retries included. A read timeout alone is not enough: a
+# provider can hold a non-streaming call open for minutes by sending keep-alive blank lines.
+CALL_DEADLINE = 60
+# Keys whose value is never filled; a request about one is never sent to JEV.
+NEVER_FILL = {"consent_yes", "password", "pan_number", "aadhaar_number", "passport_number", "bank_account"}
 MAX_FIELDS = 300
 MAX_MESSAGE = 4 * 1024 * 1024
 FIELD_KEYS = json.loads((HERE / "field_keys.json").read_text())
@@ -86,10 +92,10 @@ def question_for(f):
     }
 
 
-def chunk(fields, max_bytes):
+def chunk(fields, max_bytes, build=question_for):
     out, cur, size = [], [], 500
     for f in fields:
-        n = len(json.dumps(question_for(f)))
+        n = len(json.dumps(build(f)))
         if cur and size + n > max_bytes:
             out.append(cur)
             cur, size = [], 500
@@ -100,30 +106,78 @@ def chunk(fields, max_bytes):
     return out
 
 
-def call_jev(key, model, title, fields):
-    body = json.dumps({
-        "model": model,
-        "state": f'A job application form titled "{title}". Decide what each field asks for.',
-        "questions": {f"f{i}": question_for(f) for i, f in enumerate(fields)},
-    }).encode()
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "jev-auto-mapper/0.2"}
+def post(key, body, deadline=None):
+    """Sends one request to JEV and returns its parsed answer, retrying when busy, all within an overall deadline."""
+    deadline = deadline or time.monotonic() + CALL_DEADLINE
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "jev-auto-mapper/0.3"}
     for attempt in range(4):
         if attempt:
-            time.sleep(0.5 * 2**attempt)
+            time.sleep(min(0.5 * 2**attempt, max(0, deadline - time.monotonic())))
+        left = deadline - time.monotonic()
+        if left < 1:
+            break
         try:
-            with urllib.request.urlopen(urllib.request.Request(ENDPOINT, body, headers), timeout=30) as res:
-                data = json.load(res)
+            with urllib.request.urlopen(urllib.request.Request(ENDPOINT, body, headers), timeout=min(30, left)) as res:
+                data = bytearray()
+                while True:
+                    if time.monotonic() > deadline:
+                        raise ValueError("JEV did not answer in time")
+                    part = res.read1(65536)
+                    if not part:
+                        break
+                    data += part
+            try:
+                return json.loads(data)
+            except ValueError:
+                raise ValueError("JEV sent a malformed answer") from None
         except urllib.error.HTTPError as e:
             if e.code in RETRYABLE:
                 continue
             raise ValueError(f"JEV HTTP {e.code}") from None
-        mapped = {}
-        for i, f in enumerate(fields):
-            a = (data.get("answers") or {}).get(f"f{i}")
-            if a and a.get("type") == "choice" and a.get("choice") in FIELD_KEYS:
-                mapped[f["id"]] = {"key": a["choice"], "confidence": a.get("confidence")}
-        return {"mapped": mapped, "tokens": (data.get("usage") or {}).get("input_tokens", 0), "model": data.get("model")}
-    raise ValueError("JEV retries exhausted")
+        except (socket.timeout, TimeoutError):
+            raise ValueError("JEV did not answer in time") from None
+        except urllib.error.URLError:
+            raise ValueError("could not reach JEV") from None
+    raise ValueError("JEV did not answer in time" if time.monotonic() >= deadline - 1 else "JEV retries exhausted")
+
+
+def call_jev(key, model, title, fields):
+    data = post(key, json.dumps({
+        "model": model,
+        "state": f'A job application form titled "{title}". Decide what each field asks for.',
+        "questions": {f"f{i}": question_for(f) for i, f in enumerate(fields)},
+    }).encode())
+    mapped = {}
+    for i, f in enumerate(fields):
+        a = (data.get("answers") or {}).get(f"f{i}")
+        if a and a.get("type") == "choice" and a.get("choice") in FIELD_KEYS:
+            mapped[f["id"]] = {"key": a["choice"], "confidence": a.get("confidence")}
+    return {"mapped": mapped, "tokens": (data.get("usage") or {}).get("input_tokens", 0), "model": data.get("model")}
+
+
+def verify_question(f, key):
+    where = f' in the "{f["section"]}" section' if f["section"] else ""
+    options = f' Its options are: {" | ".join(f["options"][:30])}.' if f["options"] else ""
+    return {
+        "type": "choice",
+        "instructions": f'A {f["control"]} field{where} on a job application asks: "{f["label"]}".{options} Is it asking for this: {FIELD_KEYS[key]}?',
+        "criteria": {"yes": f"Yes, it asks for: {FIELD_KEYS[key]}", "no": "No, it asks for something else, or for someone other than the candidate"},
+    }
+
+
+def verify(key, model, title, items):
+    """A second, yes-or-no look at mappings JEV was unsure of. Returns the confidence of each yes."""
+    data = post(key, json.dumps({
+        "model": model,
+        "state": f'A job application form titled "{title}". Check what each field asks for.',
+        "questions": {f"v{i}": verify_question(f, k) for i, (f, k) in enumerate(items)},
+    }).encode())
+    out = {}
+    for i, (f, _) in enumerate(items):
+        a = (data.get("answers") or {}).get(f"v{i}") or {}
+        if a.get("choice") == "yes" and isinstance(a.get("confidence"), (int, float)):
+            out[f["id"]] = a["confidence"]
+    return {"confirmed": out, "tokens": (data.get("usage") or {}).get("input_tokens", 0)}
 
 
 def map_fields(msg):
@@ -144,12 +198,27 @@ def map_fields(msg):
     groups = chunk(fields, max_bytes)
     key = api_key()
     started = time.time()
+    title = clean(msg.get("title"), 200)
     with concurrent.futures.ThreadPoolExecutor(4) as pool:
-        results = list(pool.map(lambda g: call_jev(key, model, clean(msg.get("title"), 200), g), groups))
+        results = list(pool.map(lambda g: call_jev(key, model, title, g), groups))
+        mapped = {k: v for r in results for k, v in r["mapped"].items()}
+        calls, tokens = len(groups), sum(r["tokens"] for r in results)
+        # In JEV-only mode an unsure mapping gets a yes-or-no second look, which settles most of them.
+        below = msg.get("verifyBelow")
+        if isinstance(below, (int, float)):
+            unsure = [(f, mapped[f["id"]]["key"]) for f in fields if f["id"] in mapped
+                      and (mapped[f["id"]]["confidence"] or 0) < below and mapped[f["id"]]["key"] not in ("unknown", "free_text", "leave_blank")]
+            batches = [unsure[i:i + 10] for i in range(0, len(unsure), 10)]
+            for r in pool.map(lambda b: verify(key, model, title, b), batches):
+                tokens += r["tokens"]
+                for fid, conf in r["confirmed"].items():
+                    if conf > (mapped[fid]["confidence"] or 0):
+                        mapped[fid] = {**mapped[fid], "confidence": conf, "verified": True}
+            calls += len(batches)
     return {
-        "mapped": {k: v for r in results for k, v in r["mapped"].items()},
-        "calls": len(groups),
-        "inputTokens": sum(r["tokens"] for r in results),
+        "mapped": mapped,
+        "calls": calls,
+        "inputTokens": tokens,
         "model": results[0]["model"] if results else None,
         "ms": int((time.time() - started) * 1000),
     }
@@ -189,34 +258,25 @@ def workday(_):
     return data
 
 
+def read_pick(answer, options):
+    """The option index JEV chose, or None for none, a missing, malformed or out-of-range answer."""
+    picked = (answer or {}).get("choice", "none")
+    confidence = (answer or {}).get("confidence")
+    if picked == "none":
+        return {"index": None, "confidence": confidence}
+    # A malformed answer counts as no answer, never a raw error to the page.
+    if not isinstance(picked, str) or not re.fullmatch(r"o(\d+)", picked) or int(picked[1:]) >= len(options):
+        return {"index": None, "confidence": None}
+    return {"index": int(picked[1:]), "confidence": confidence}
+
+
 def ask_choice(state, instructions, options, none_text=None):
-    body = json.dumps({
+    data = post(api_key(), json.dumps({
         "model": "jev-latest",
         "state": state,
         "questions": {"pick": {"type": "choice", "instructions": instructions, "criteria": option_criteria(options, none_text)}},
-    }).encode()
-    headers = {"Authorization": f"Bearer {api_key()}", "Content-Type": "application/json", "User-Agent": "jev-auto-mapper/0.2"}
-    for attempt in range(4):
-        if attempt:
-            time.sleep(0.5 * 2**attempt)
-        try:
-            with urllib.request.urlopen(urllib.request.Request(ENDPOINT, body, headers), timeout=30) as res:
-                answer = (json.load(res).get("answers") or {}).get("pick") or {}
-        except urllib.error.HTTPError as e:
-            if e.code in RETRYABLE:
-                continue
-            raise ValueError(f"JEV HTTP {e.code}") from None
-        picked = answer.get("choice", "none")
-        if picked == "none":
-            return {"index": None, "confidence": answer.get("confidence")}
-        # A missing, malformed or out-of-range answer counts as no answer, never a raw error to the page.
-        if not isinstance(picked, str) or not re.fullmatch(r"o(\d+)", picked):
-            return {"index": None, "confidence": None}
-        index = int(picked[1:])
-        if index >= len(options):
-            return {"index": None, "confidence": None}
-        return {"index": index, "confidence": answer.get("confidence")}
-    raise ValueError("JEV retries exhausted")
+    }).encode())
+    return read_pick((data.get("answers") or {}).get("pick"), options)
 
 
 def option_criteria(options, none_text=None):
@@ -245,6 +305,8 @@ def candidate_facts():
         f'Citizenship: {profile.get("citizenship", "")}. Lives in {profile.get("country", "")}.',
         f"Complete employment history: {jobs}.",
         f'Skills: {profile.get("skills", "")}.',
+        # Without this the guesser had no languages and answered "Basic" to "How fluent are you in spoken Hindi?".
+        f'Languages spoken: {profile.get("spoken_languages", "")}.',
         # Without this the guesser treated the degree as unlisted and answered "No" to "Do you have a Bachelor's degree?".
         f'Education: {profile.get("degree", "")} in {profile.get("major", "")} from {profile.get("school", "")}, graduated {profile.get("graduation_year", "")}.',
         f'Self-identification: gender {profile.get("gender", "")}; ethnicity {profile.get("ethnicity", "")}; veteran status: {profile.get("veteran_status", "")}; disability: {profile.get("disability_status", "")}.',
@@ -252,17 +314,97 @@ def candidate_facts():
     ])
 
 
+GUESS = "Make the best educated guess from the candidate facts: which option is most likely true for this candidate? The employment history and skills are complete, so if the question asks whether the candidate has a job, status, clearance, tool or qualification those facts do not list, the answer is No. For availability, willingness, comfort or logistics questions, the answer is Yes. Prefer generic options over ones naming a specific visa or country that the facts do not mention, and prefer a real answer over declining to answer."
+MATCH = ("Which option says the same thing as the candidate's answer? Allow for different wording, abbreviations, units or a qualifier; "
+         "when the answer is a number and the options are ranges or thresholds (such as \"2-4 years\", \"Up to 10\", \"Above 30\" or \"5+\"), "
+         "pick the option whose range contains it. Pay in the profile is a yearly amount in the candidate's local currency.")
+TICK = ["Tick it: it is true of the candidate or it is what the candidate wants", "Leave it unticked"]
+NO_TICK = " Never tick a box that agrees to terms or a policy, gives consent, or signs up for messages."
+MAX_OPTIONS = 300
+
+
+def asked(f):
+    where = f' in the "{f["section"]}" section' if f["section"] else ""
+    if f["control"] == "checkbox":
+        return f'A job application has a tick box{where} labelled "{f["question"]}". Should it be ticked for this candidate?'
+    return f'A job application asks{where}: "{f["question"]}".'
+
+
+def match_question(f):
+    """Matching a known profile answer to the form's wording. Asked without the candidate facts, which only add doubt here."""
+    text = f'{asked(f)} The candidate\'s answer, from their profile ({FIELD_KEYS[f["key"]]}), is "{f["value"]}". {MATCH}'
+    return {"type": "choice", "instructions": text, "criteria": option_criteria(f["options"], "None of the options says the same thing as the candidate's answer")}
+
+
+def guess_question(f):
+    text = f"{asked(f)} {GUESS}"
+    if f["value"]:
+        text += f' The profile gives "{f["value"]}" for {FIELD_KEYS[f["key"]][0].lower()}{FIELD_KEYS[f["key"]][1:]}, which no option says exactly.'
+    if f["control"] == "checkbox":
+        text += NO_TICK
+    return {"type": "choice", "instructions": text, "criteria": option_criteria(f["options"])}
+
+
+def pick_fields(msg):
+    """Chooses the option for every choice field of a page in batched calls. A field with a profile answer
+    is first matched to the form's wording; a field without one, or whose answer matched no option
+    confidently, gets JEV's best guess from the candidate facts, unless it may not be guessed."""
+    fields = []
+    for f in (msg.get("fields") or [])[:MAX_FIELDS]:
+        key = f.get("key") if f.get("key") in FIELD_KEYS else None
+        # Never-filled keys are never asked about, even if the page sends one.
+        if key in NEVER_FILL:
+            continue
+        control = clean(f.get("control"), 20)
+        # A tick box is a yes-or-no choice whose wording the helper sets, so index 0 always means tick.
+        options = list(TICK) if control == "checkbox" else [clean(o, 200) for o in (f.get("options") or [])[:MAX_OPTIONS]]
+        value = clean(f.get("value"), 300) if key and isinstance(f.get("value"), str) else ""
+        if not options or not (value or f.get("guess")):
+            continue
+        fields.append({
+            "id": clean(f.get("id"), 100), "control": control, "question": clean(f.get("question"), 400),
+            "section": clean(f.get("section"), 100), "key": key, "value": value, "guess": bool(f.get("guess")), "options": options,
+        })
+    threshold = msg.get("threshold") if isinstance(msg.get("threshold"), (int, float)) else 0.9
+    max_bytes = min(int(msg.get("maxBytes") or 28000), 30000)
+    title = clean(msg.get("title"), 200)
+    key = api_key()
+    started = time.time()
+    picked, calls, tokens = {}, 0, 0
+
+    def run(batch, build, state, how):
+        nonlocal calls, tokens
+        groups = chunk(batch, max(8000, max_bytes - len(state)), build)
+
+        def ask(group):
+            data = post(key, json.dumps({"model": "jev-latest", "state": state, "questions": {f"p{i}": build(f) for i, f in enumerate(group)}}).encode())
+            answers = data.get("answers") or {}
+            return {f["id"]: {**read_pick(answers.get(f"p{i}"), f["options"]), "how": how} for i, f in enumerate(group)}, (data.get("usage") or {}).get("input_tokens", 0)
+
+        with concurrent.futures.ThreadPoolExecutor(4) as pool:
+            for r, t in pool.map(ask, groups):
+                picked.update(r)
+                tokens += t
+        calls += len(groups)
+
+    run([f for f in fields if f["value"]], match_question, f'A job application form titled "{title}". Match each of the candidate\'s answers to the form\'s options.', "match")
+    unsure = [f for f in fields if f["guess"] and (f["id"] not in picked or picked[f["id"]]["index"] is None or (picked[f["id"]]["confidence"] or 0) < threshold)]
+    if unsure:
+        run(unsure, guess_question, f'A job application form titled "{title}". Answer each question for the candidate.\n' + candidate_facts(), "guess")
+    return {"picked": picked, "calls": calls, "inputTokens": tokens, "ms": int((time.time() - started) * 1000)}
+
+
 def answer(msg):
     """Asks JEV for the most likely option from the candidate's facts. It always picks one: a filled form matters more than a perfect one."""
     where = f' in the "{clean(msg.get("section"), 100)}" section' if msg.get("section") else ""
     return ask_choice(
         candidate_facts(),
-        f'A job application asks{where}: "{clean(msg.get("question"), 400)}". Make the best educated guess from the candidate facts: which option is most likely true for this candidate? The employment history and skills are complete, so if the question asks whether the candidate has a job, status, clearance, tool or qualification those facts do not list, the answer is No. For availability, willingness, comfort or logistics questions, the answer is Yes. Prefer generic options over ones naming a specific visa or country that the facts do not mention, and prefer a real answer over declining to answer.',
+        f'A job application asks{where}: "{clean(msg.get("question"), 400)}". {GUESS}',
         [clean(o, 200) for o in msg["options"][:40]],
     )
 
 
-HANDLERS = {"answer": answer, "choose": choose, "map": map_fields, "values": values, "resume": lambda _: resume(), "workday": workday}
+HANDLERS = {"answer": answer, "choose": choose, "map": map_fields, "pick": pick_fields, "values": values, "resume": lambda _: resume(), "workday": workday}
 
 
 def main():

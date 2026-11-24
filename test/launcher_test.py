@@ -65,15 +65,42 @@ with tempfile.TemporaryDirectory() as tmp:
             check(f"button on {f}", has_button(page))
         page.goto("http://127.0.0.1:8767/form.html")
         check("button on the job form", has_button(page))
-        # By default the first fill on a site waits for the in-page "Allow" bar; "Not now" fills nothing.
-        page.locator("jev-autofill").locator("#go").click()
+        # By default the first fill on a site asks first, in the button itself; "Not now" fills nothing.
+        state = lambda: page.evaluate("document.querySelector('jev-autofill').dataset.state")
+        pill = page.locator("jev-autofill")
+        pill.locator("#go").click()
+        pill.locator("#ask").wait_for(state="visible", timeout=10000)
+        check("in-page button asks before the first fill", state() == "needs-approval")
+        # A page script can't answer the question for you.
+        page.evaluate("document.querySelector('jev-autofill').shadowRoot.getElementById('always').click()")
+        time.sleep(1)
+        check("untrusted allow ignored", state() == "needs-approval")
+        pill.get_by_role("button", name="Not now").click()
+        time.sleep(2)
+        check("declined: a distinct state, not an error", state() == "declined" and page.evaluate("document.querySelector('jev-autofill').dataset.error") == "not confirmed for this site")
+        check("declined: nothing filled", not page.evaluate("!!document.getElementById('jev-auto-mapper-report')"))
+        # The toolbar asks in a bar that a page re-rendering its body (an Angular portal) can't remove.
+        sw.evaluate("async () => { const [t] = await chrome.tabs.query({ url: 'http://127.0.0.1/*' }); chrome.action.onClicked.dispatch(t); }")
         bar = page.locator("#jev-autofill-confirm")
         bar.wait_for(timeout=10000)
-        check("in-page button asks before the first fill", bar.is_visible())
+        page.evaluate("document.body.replaceWith(document.createElement('body'))")
+        time.sleep(0.5)
+        check("toolbar bar survives a body re-render", bar.is_visible() and bar.get_by_role("button", name="Always allow").is_visible())
         bar.get_by_role("button", name="Not now").click()
-        time.sleep(2)
-        check("declined: nothing filled", page.evaluate("document.querySelector('jev-autofill').dataset.state") == "error"
-              and not page.evaluate("!!document.getElementById('jev-auto-mapper-report')"))
+        time.sleep(1)
+        check("toolbar bar declined: nothing filled", not page.evaluate("!!document.getElementById('jev-auto-mapper-report')"))
+        page.reload()
+        has_button(page)
+        # "Allow once" in the button runs the fill.
+        pill.locator("#go").click()
+        pill.locator("#ask").wait_for(state="visible", timeout=10000)
+        pill.get_by_role("button", name="Allow once").click()
+        end = time.time() + 170
+        while time.time() < end and state() in ("needs-approval", "running"):
+            time.sleep(1)
+        check("allowed once from the button: filled", state() in ("done", "error") and int(page.evaluate("document.querySelector('jev-autofill').dataset.filled || 0")) > 0)
+        page.reload()
+        has_button(page)
         # With the question turned off (an agent-driven setup) the button fills straight away.
         sw.evaluate("() => chrome.storage.local.set({askFirst: false})")
         page.reload()

@@ -15,7 +15,11 @@ function askHost(msg) {
 async function handle(msg) {
   if (msg.type === "map" && Array.isArray(msg.fields)) {
     const { model, maxBytes } = await chrome.storage.local.get(["model", "maxBytes"]);
-    return askHost({ type: "map", title: msg.title, fields: msg.fields, model, maxBytes });
+    return askHost({ type: "map", title: msg.title, fields: msg.fields, model, maxBytes, verifyBelow: typeof msg.verifyBelow === "number" ? msg.verifyBelow : undefined });
+  }
+  if (msg.type === "pick" && Array.isArray(msg.fields)) {
+    const { maxBytes } = await chrome.storage.local.get(["maxBytes"]);
+    return askHost({ type: "pick", title: msg.title, fields: msg.fields, threshold: msg.threshold, maxBytes });
   }
   if (msg.type === "values" && Array.isArray(msg.keys)) return askHost({ type: "values", keys: msg.keys });
   if (msg.type === "resume") return askHost({ type: "resume" });
@@ -38,7 +42,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   // The in-page "Fill with JEV" button (launcher.js) asks for a run of its own tab. It sends this only
   // on a trusted click, and the run still goes through the same per-site confirmation as the toolbar.
   if (msg.type === "run") {
-    fillTab(sender.tab).then(reply, (e) => reply({ error: String(e.message || e) }));
+    fillTab(sender.tab, sender.frameId).then(reply, (e) => reply({ error: String(e.message || e) }));
     return true;
   }
   if (!active.has(sender.tab.id)) return;
@@ -62,10 +66,16 @@ function confirmInPage(origin) {
   return new Promise((resolve) => {
     const old = document.getElementById("jev-autofill-confirm");
     if (old) old.remove();
+    // Its own element with a shadow root, on <html> rather than <body>: page styles can't hide it,
+    // and a framework that re-renders the body (an Angular portal) can't take it away; if the page
+    // removes it anyway, it is put back until it is answered.
+    const host = document.createElement("jev-autofill-confirm");
+    host.id = "jev-autofill-confirm";
+    host.style.cssText = "all:initial;position:fixed;top:12px;right:12px;z-index:2147483647";
+    const root = host.attachShadow({ mode: "open" });
     const bar = document.createElement("div");
-    bar.id = "jev-autofill-confirm";
     bar.style.cssText =
-      "position:fixed;top:12px;right:12px;z-index:2147483647;background:#1f2430;color:#fff;font:13px system-ui;padding:12px 14px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.35);max-width:340px";
+      "background:#1f2430;color:#fff;font:13px system-ui;padding:12px 14px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.35);max-width:340px";
     const text = document.createElement("div");
     text.textContent = `Allow JEV Autofill to run on ${origin}? It fills your profile into this page's form fields.`;
     text.style.marginBottom = "10px";
@@ -73,16 +83,15 @@ function confirmInPage(origin) {
     const row = document.createElement("div");
     row.style.cssText = "display:flex;gap:8px";
     // Only real user clicks count: a page must not be able to confirm itself.
-    const chosen = (value) => (e) => {
-      if (!e.isTrusted) return;
+    const keep = new MutationObserver(() => host.isConnected || document.documentElement.appendChild(host));
+    const finish = (value) => {
       clearTimeout(timer);
-      bar.remove();
+      keep.disconnect();
+      host.remove();
       resolve(value);
     };
-    const timer = setTimeout(() => {
-      bar.remove();
-      resolve(null);
-    }, 90000);
+    const chosen = (value) => (e) => e.isTrusted && finish(value);
+    const timer = setTimeout(() => finish(null), 90000);
     for (const [label, value, primary] of [
       ["Not now", null, false],
       ["Allow once", "once", false],
@@ -95,28 +104,38 @@ function confirmInPage(origin) {
       row.appendChild(b);
     }
     bar.appendChild(row);
-    (document.body || document.documentElement).appendChild(bar);
+    root.appendChild(bar);
+    document.documentElement.appendChild(host);
+    keep.observe(document.documentElement, { childList: true });
   });
 }
 
 // The first fill on each site asks for permission; the answer is remembered in chrome.storage.
 // The options page can turn the question off (askFirst: false), e.g. for an agent-driven setup.
-async function confirmSite(tabId, origin) {
+// A run started from the in-page button asks in that button, which is known to be on screen; the
+// toolbar and shortcut ask in a bar at the top of the page.
+async function confirmSite(tabId, origin, launcherFrame) {
   const { sites, askFirst } = await chrome.storage.local.get(["sites", "askFirst"]);
   if (askFirst === false || (sites && sites[origin])) return "always";
   let choice;
   try {
-    const frames = await chrome.scripting.executeScript({ target: { tabId }, func: confirmInPage, args: [origin] });
-    choice = frames[0] && frames[0].result;
+    if (launcherFrame != null) {
+      const asked = chrome.tabs.sendMessage(tabId, { type: "confirm", origin }, { frameId: launcherFrame });
+      choice = await Promise.race([asked, new Promise((r) => setTimeout(() => r(null), 95000))]);
+    } else {
+      const frames = await chrome.scripting.executeScript({ target: { tabId }, func: confirmInPage, args: [origin] });
+      choice = frames[0] && frames[0].result;
+    }
   } catch {
     choice = null;
   }
+  if (choice !== "once" && choice !== "always") choice = null;
   if (choice === "always") await chrome.storage.local.set({ sites: { ...(sites || {}), [origin]: true } });
   return choice;
 }
 
 // One fill of a whole tab (all frames). Used by the toolbar button, Alt+Shift+J and the in-page button.
-async function fillTab(tab) {
+async function fillTab(tab, launcherFrame) {
   if (busy.has(tab.id)) return { error: "already filling this tab" };
   const origin = originOf(tab.url);
   if (!origin) {
@@ -128,10 +147,10 @@ async function fillTab(tab) {
   busy.add(tab.id);
   let keepAlive;
   try {
-    const choice = await confirmSite(tab.id, origin);
+    const choice = await confirmSite(tab.id, origin, launcherFrame);
     if (choice !== "once" && choice !== "always") {
       show(tab.id, "?", "JEV Autofill: not confirmed for this site");
-      return { error: "not confirmed for this site" };
+      return { error: "not confirmed for this site", declined: true };
     }
     active.set(tab.id, origin);
     // Calling an extension API keeps Chrome from stopping this worker during a long run.

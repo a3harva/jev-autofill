@@ -14,6 +14,8 @@
   let el;
   let label;
   let observer;
+  // Set while the site permission question is shown; answers the background worker.
+  let answer = null;
 
   // When the extension is reloaded or updated, this copy keeps running in tabs that were already
   // open, but it is cut off: every chrome.* call throws "Extension context invalidated". Chrome
@@ -106,9 +108,25 @@
       :host([data-state=running]) .pill{background:#6b7280}
       :host([data-state=error]) .pill{background:#b91c1c}
       :host([data-state=done]) .pill{background:#15803d}
-    </style><div class="pill"><button id="go" aria-label="Fill with JEV">Fill with JEV</button><button id="x" aria-label="Hide JEV on this site" title="Hide on this site">×</button></div>`;
+      :host([data-state=needs-approval]) .pill{background:#b45309}
+      :host([data-state=declined]) .pill{background:#4b5563}
+      #ask{display:none;flex-direction:column;gap:6px;margin-bottom:6px;background:#1f2430;color:#fff;font:400 13px/1.35 system-ui,sans-serif;padding:10px 12px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.25);max-width:300px}
+      :host([data-state=needs-approval]) #ask{display:flex}
+      #ask div{display:flex;gap:6px}
+      #ask button{border:1px solid #666;border-radius:5px;padding:5px 9px}
+      #ask button.primary{background:#2563eb;border-color:#2563eb}
+    </style><div id="ask" role="dialog" aria-label="Allow JEV Autofill on this site"><span id="ask-text"></span><div><button id="no">Not now</button><button id="once">Allow once</button><button id="always" class="primary">Always allow</button></div></div><div class="pill"><button id="go" aria-label="Fill with JEV">Fill with JEV</button><button id="x" aria-label="Hide JEV on this site" title="Hide on this site">×</button></div>`;
     label = shadow.getElementById("go");
     label.addEventListener("click", run);
+    // The site permission question, asked right here when the run came from this button. Only real
+    // clicks answer it, so a page script can't allow itself.
+    for (const [id, value] of [["no", null], ["once", "once"], ["always", "always"]]) {
+      shadow.getElementById(id).addEventListener("click", (e) => {
+        if (!e.isTrusted || !answer) return;
+        answer(value);
+      });
+    }
+    shadow.getElementById("ask-text").textContent = `Allow JEV Autofill to run on ${location.origin}? It fills your profile into this page's form fields.`;
     shadow.getElementById("x").addEventListener("click", async (e) => {
       if (!e.isTrusted) return;
       hidden = true;
@@ -128,12 +146,30 @@
     label.textContent = text;
   }
 
+  if (alive()) {
+    chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+      if (sender.id !== chrome.runtime.id || msg.type !== "confirm" || !el) return;
+      if (!el.isConnected) document.documentElement.appendChild(el);
+      set("needs-approval", "JEV: allow this site?");
+      const timer = setTimeout(() => answer && answer(null), 90000);
+      answer = (value) => {
+        clearTimeout(timer);
+        answer = null;
+        set("running", value ? "JEV: filling…" : "JEV: not allowed here");
+        reply(value);
+      };
+      return true;
+    });
+  }
+
   async function run(e) {
-    if (!e.isTrusted || state === "running") return;
+    if (!e.isTrusted || state === "running" || state === "needs-approval") return;
     if (!alive()) return set("error", "JEV: reload this page", { error: "the extension was reloaded" });
     set("running", "JEV: filling…");
     try {
       const res = await chrome.runtime.sendMessage({ type: "run" });
+      // Not allowed on this site (or the question timed out): not a failure, and clicking again asks again.
+      if (res?.declined) return set("declined", "JEV: not allowed here · click to ask again", { error: res.error });
       if (!res || res.error) throw new Error(res ? res.error : "no answer");
       set(res.fillError ? "error" : "done", `JEV: ${res.filled} filled · ${res.left} left`, { filled: res.filled, left: res.left });
       if (res.fillError) el.setAttribute("data-error", res.fillError);
@@ -150,9 +186,10 @@
       if (state !== "error") el.remove();
       return;
     }
-    const show = state === "running" || looksLikeApplication();
+    const busy = state === "running" || state === "needs-approval";
+    const show = busy || looksLikeApplication();
     if (show && !el.isConnected) document.documentElement.appendChild(el);
-    if (!show && el.isConnected && state !== "running") el.remove();
+    if (!show && el.isConnected && !busy) el.remove();
   }
 
   chrome.storage.local.get("jevHidden").then(({ jevHidden = [] }) => {
